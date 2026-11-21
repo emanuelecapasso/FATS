@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.routes import router
-from core.schemas import ErrorResponse
+from core.schemas import ErrorCode, ErrorResponse
 from quantitative.exceptions import (
     InsufficientDataError,
     QuantitativeEngineUnavailableError,
@@ -32,16 +32,18 @@ def create_app(evaluator: QuantitativeEvaluator | None = None) -> FastAPI:
     ) -> JSONResponse:
         del request
         response = ErrorResponse(
-            code="invalid_request",
+            error_code=ErrorCode.INVALID_REQUEST,
             message="Request does not match the quantitative API contract.",
-            details=[
-                {
-                    "location": list(error["loc"]),
-                    "message": error["msg"],
-                    "type": error["type"],
-                }
-                for error in exc.errors()
-            ],
+            details={
+                "errors": [
+                    {
+                        "location": list(error["loc"]),
+                        "message": error["msg"],
+                        "type": error["type"],
+                    }
+                    for error in exc.errors()
+                ]
+            },
         )
         return JSONResponse(status_code=422, content=response.model_dump(mode="json"))
 
@@ -50,7 +52,10 @@ def create_app(evaluator: QuantitativeEvaluator | None = None) -> FastAPI:
         request: Request, exc: InsufficientDataError
     ) -> JSONResponse:
         del request
-        response = ErrorResponse(code="insufficient_data", message=str(exc))
+        response = ErrorResponse(
+            error_code=ErrorCode.INSUFFICIENT_DATA,
+            message=str(exc),
+        )
         return JSONResponse(status_code=422, content=response.model_dump(mode="json"))
 
     @app.exception_handler(QuantitativeEngineUnavailableError)
@@ -59,7 +64,7 @@ def create_app(evaluator: QuantitativeEvaluator | None = None) -> FastAPI:
     ) -> JSONResponse:
         del request
         response = ErrorResponse(
-            code="quantitative_unavailable",
+            error_code=ErrorCode.QUANTITATIVE_UNAVAILABLE,
             message=str(exc),
         )
         return JSONResponse(status_code=503, content=response.model_dump(mode="json"))
