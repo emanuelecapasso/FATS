@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.0"
+CURRENT_SCHEMA_VERSION = "1.1"
 
 
 # --- ENUMS ---
@@ -32,6 +32,12 @@ class DataQuality(str, Enum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     STALE = "stale"
+
+
+class VolumeType(str, Enum):
+    TRADED = "traded"            # Volume reale negoziato (es. Azioni, Crypto)
+    TICK_COUNT = "tick_count"    # Numero di tick/variazioni di prezzo (comune nel Forex OTC)
+    UNAVAILABLE = "unavailable"  # Dato non disponibile (es. Forex Midpoint)
 
 
 class ErrorCode(str, Enum):
@@ -76,7 +82,21 @@ class MarketBar(StrictBaseModel):
     high: float = Field(..., allow_inf_nan=False)
     low: float = Field(..., allow_inf_nan=False)
     close: float = Field(..., allow_inf_nan=False)
-    volume: float = Field(..., ge=0.0, allow_inf_nan=False)
+    volume: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    volume_type: VolumeType = Field(default=VolumeType.UNAVAILABLE)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_default_volume_type(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "volume_type" not in data:
+            updated = dict(data)
+            updated["volume_type"] = (
+                VolumeType.UNAVAILABLE
+                if updated.get("volume") is None
+                else VolumeType.TRADED
+            )
+            return updated
+        return data
 
     @field_validator("timestamp")
     @classmethod
@@ -84,7 +104,7 @@ class MarketBar(StrictBaseModel):
         return validate_utc_datetime(v)
 
     @model_validator(mode="after")
-    def check_ohlc_coherence(self) -> "MarketBar":
+    def check_bar_coherence(self) -> "MarketBar":
         if not (
             self.low <= min(self.open, self.close)
             and self.high >= max(self.open, self.close)
@@ -92,6 +112,12 @@ class MarketBar(StrictBaseModel):
             raise ValueError(
                 f"OHLC incoerente per {self.timestamp}: O={self.open}, H={self.high}, L={self.low}, C={self.close}"
             )
+
+        if self.volume is None and self.volume_type != VolumeType.UNAVAILABLE:
+            raise ValueError("Se il volume è None, volume_type deve essere UNAVAILABLE.")
+        if self.volume is not None and self.volume_type == VolumeType.UNAVAILABLE:
+            raise ValueError("Se il volume è valorizzato, volume_type non può essere UNAVAILABLE.")
+
         return self
 
 
@@ -99,6 +125,7 @@ class DataProvenance(StrictBaseModel):
     kind: DataSourceKind
     provider_id: str = Field(..., min_length=1)
     received_at: datetime
+    price_type: str | None = Field(default=None, min_length=1)
 
     @field_validator("received_at")
     @classmethod
@@ -183,7 +210,7 @@ class RiskDecision(StrictBaseModel):
 
 
 class EvaluationResponse(StrictBaseModel):
-    schema_version: Literal["1.0"] = Field(
+    schema_version: Literal["1.1"] = Field(
         default=CURRENT_SCHEMA_VERSION,
         description="Versione dello schema con cui è stato serializzato l'output quantitativo.",
     )
