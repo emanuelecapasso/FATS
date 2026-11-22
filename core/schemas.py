@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.2"
+CURRENT_SCHEMA_VERSION = "1.3"
 
 
 # --- ENUMS ---
@@ -86,7 +86,10 @@ class MarketBar(StrictBaseModel):
     close: float = Field(..., allow_inf_nan=False)
     volume: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
     volume_type: VolumeType = Field(default=VolumeType.UNAVAILABLE)
-    is_closed: bool | None = Field(default=None, description="Indica se la barra è chiusa. Se None, lo stato è ignoto.")
+    is_closed: bool | None = Field(
+        default=None,
+        description="Indica se la barra è chiusa. Se None, lo stato è ignoto.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -177,6 +180,10 @@ class MarketDataSnapshot(StrictBaseModel):
 
 class StrategyConfiguration(StrictBaseModel):
     strategy_id: StrategyId
+    current_position: SignalDirection = Field(
+        default=SignalDirection.FLAT,
+        description="Posizione attuale usata per distinguere mantenimento e uscita.",
+    )
     parameters: dict[str, float] = Field(
         default_factory=dict,
         description="PROVVISORIO: Dizionario generico per i parametri. Non rappresenta il contratto finale.",

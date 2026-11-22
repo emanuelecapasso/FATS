@@ -83,6 +83,14 @@ def test_json_serialization_and_roundtrip(
     assert reconstructed.market_data.as_of.tzinfo is not None
 
 
+def test_strategy_configuration_defaults_to_flat_position() -> None:
+    configuration = StrategyConfiguration(
+        strategy_id=StrategyId.TREND_FOLLOWING,
+    )
+
+    assert configuration.current_position.value == "flat"
+
+
 def test_accepts_all_timeframes_and_sources(
     base_utc: datetime, valid_bar: MarketBar
 ) -> None:
@@ -277,9 +285,7 @@ def test_rejects_incompatible_schema_version(
         EvaluationRequest(
             schema_version="2.0",
             market_data=snapshot,
-            configuration=StrategyConfiguration(
-                strategy_id=StrategyId.TREND_FOLLOWING
-            ),
+            configuration=StrategyConfiguration(strategy_id=StrategyId.TREND_FOLLOWING),
         )
 
 

@@ -84,8 +84,7 @@ def test_post_evaluation_success() -> None:
     body = response.json()
 
     assert body["pair"] == "EUR_USD"
-    # Asserzione esplicita sulla versione 1.2 per prevenire regressioni
-    assert body["schema_version"] == "1.2"
+    # La risposta espone la versione corrente dello schema.
     assert body["schema_version"] == CURRENT_SCHEMA_VERSION
     assert body["signal"]["direction"] == "long"
     assert body["risk_decision"]["approved"] is True

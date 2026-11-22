@@ -30,14 +30,11 @@ class QuantitativeEngine:
         ]
         if missing_timeframes:
             missing = ", ".join(tf.value for tf in missing_timeframes)
-            raise InvalidMarketDataError(
-                f"Required timeframes are missing: {missing}."
-            )
+            raise InvalidMarketDataError(f"Required timeframes are missing: {missing}.")
 
         # Itera in ordine canonico e passa alla strategia uno snapshot canonico.
         ordered_series = {
-            timeframe: snapshot.series[timeframe]
-            for timeframe in REQUIRED_TIMEFRAMES
+            timeframe: snapshot.series[timeframe] for timeframe in REQUIRED_TIMEFRAMES
         }
         for tf in REQUIRED_TIMEFRAMES:
             series_data = ordered_series[tf]
@@ -58,7 +55,7 @@ class QuantitativeEngine:
                     raise InvalidMarketDataError(
                         f"Bar timestamp {bar.timestamp} is in the future relative to as_of {snapshot.as_of}."
                     )
-                
+
                 # Regola: Verifica ordine strettamente crescente (rifiuta duplicati e disordinati)
                 if i > 0 and bar.timestamp <= bars[i - 1].timestamp:
                     raise InvalidMarketDataError(
