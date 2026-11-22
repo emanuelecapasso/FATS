@@ -108,7 +108,12 @@ def _bar(timestamp, open_price, *, is_closed=True):
 
 
 def _request(
-    *, gaps=False, costs=None, include_future_higher_bar=False, m5_closed=True
+    *,
+    gaps=False,
+    costs=None,
+    include_future_higher_bar=False,
+    m5_closed=True,
+    conversion_rate=1.0,
 ):
     offsets = [0, 5, 15, 20, 25, 30] if gaps else [0, 5, 10, 15, 20, 25]
     timestamps = [BASE_TIME + timedelta(minutes=offset) for offset in offsets]
@@ -169,7 +174,7 @@ def _request(
             daily_start_equity=10_000.0,
             peak_equity=10_000.0,
             gross_exposure=0.0,
-            price_to_account_currency_rate=1.0,
+            price_to_account_currency_rate=conversion_rate,
             position_direction=SignalDirection.FLAT,
             position_quantity=0.0,
         ),
@@ -178,6 +183,19 @@ def _request(
         initial_capital=10_000.0,
         costs=costs or BacktestCostModel(),
     )
+
+
+def _with_m5_bars(request, bars):
+    series = request.market_data.series[Timeframe.M5].model_copy(update={"bars": bars})
+    snapshot = request.market_data.model_copy(
+        update={
+            "series": {
+                **request.market_data.series,
+                Timeframe.M5: series,
+            }
+        }
+    )
+    return request.model_copy(update={"market_data": snapshot})
 
 
 @pytest.mark.asyncio
@@ -196,6 +214,14 @@ async def test_backtest_runs_chronologically_and_creates_trade():
     assert result.input_fingerprint
     assert result.strategy_version == strategy.version
     assert result.engine_version
+    assert result.backtest_version == "1.1.0"
+    assert len(result.equity_curve) == 6
+    assert result.equity_curve[-1].equity == result.final_equity
+    assert result.metrics.profit_factor is None
+    assert result.metrics.expectancy_per_trade == pytest.approx(2.0)
+    assert result.metrics.time_in_market_pct > 0.0
+    assert result.metrics.max_gross_exposure > 0.0
+    assert result.metrics.average_gross_exposure > 0.0
     assert [item[0] for item in strategy.observed_timestamps] == sorted(
         item[0] for item in strategy.observed_timestamps
     )
@@ -223,6 +249,100 @@ async def test_backtest_no_trade_is_a_valid_result():
     assert result.metrics.win_rate == 0.0
     assert result.metrics.net_pnl == 0.0
     assert result.final_equity == result.initial_capital
+    assert all(point.equity == result.initial_capital for point in result.equity_curve)
+    assert result.metrics.max_drawdown_abs == 0.0
+    assert result.metrics.max_drawdown_pct == 0.0
+    assert result.metrics.profit_factor is None
+    assert result.metrics.expectancy_per_trade is None
+    assert result.metrics.time_in_market_pct == 0.0
+    assert result.metrics.max_gross_exposure == 0.0
+    assert result.metrics.average_gross_exposure == 0.0
+
+
+@pytest.mark.asyncio
+async def test_mark_to_market_drawdown_includes_open_position_loss():
+    request = _request()
+    bars = request.market_data.series[Timeframe.M5].bars.copy()
+    bars[1] = MarketBar(
+        timestamp=bars[1].timestamp,
+        open=101.0,
+        high=102.0,
+        low=98.0,
+        close=99.0,
+        volume_type=VolumeType.UNAVAILABLE,
+        is_closed=True,
+    )
+
+    result = await BacktestRunner(ScriptedStrategy(), AllowRisk()).run(
+        _with_m5_bars(request, bars)
+    )
+
+    open_loss_point = result.equity_curve[1]
+    assert open_loss_point.position_direction == SignalDirection.LONG
+    assert open_loss_point.unrealized_pnl == pytest.approx(-2.0)
+    assert result.metrics.max_drawdown_abs == pytest.approx(2.0)
+    assert result.metrics.max_drawdown_pct == pytest.approx(2.0 / 10_000.0)
+
+
+@pytest.mark.asyncio
+async def test_losing_trade_metrics_are_finite_and_consistent():
+    request = _request()
+    bars = request.market_data.series[Timeframe.M5].bars.copy()
+    bars[3] = MarketBar(
+        timestamp=bars[3].timestamp,
+        open=90.0,
+        high=91.0,
+        low=89.0,
+        close=90.5,
+        volume_type=VolumeType.UNAVAILABLE,
+        is_closed=True,
+    )
+
+    result = await BacktestRunner(ScriptedStrategy(), AllowRisk()).run(
+        _with_m5_bars(request, bars)
+    )
+
+    assert result.metrics.losing_trades == 1
+    assert result.metrics.profit_factor == 0.0
+    assert result.metrics.expectancy_per_trade == pytest.approx(-11.0)
+    assert result.metrics.net_pnl == pytest.approx(-11.0)
+    assert result.equity_curve[-1].equity == pytest.approx(9_989.0)
+
+
+@pytest.mark.asyncio
+async def test_currency_conversion_scales_pnl_and_costs():
+    request = _request(
+        costs=BacktestCostModel(commission_bps=10.0, slippage_bps=10.0),
+        conversion_rate=2.0,
+    )
+    result = await BacktestRunner(ScriptedStrategy(), AllowRisk()).run(request)
+
+    assert result.trades[0].gross_pnl == pytest.approx(4.0)
+    assert result.trades[0].commission == pytest.approx(0.408)
+    assert result.trades[0].slippage_cost == pytest.approx(0.408)
+    assert result.trades[0].net_pnl == pytest.approx(3.184)
+    assert result.equity_curve[-1].equity == pytest.approx(10_003.184)
+
+
+@pytest.mark.asyncio
+async def test_empty_replay_returns_defined_metrics_without_non_finite_values():
+    request = _request()
+    empty_series = {
+        timeframe: series.model_copy(update={"bars": []})
+        for timeframe, series in request.market_data.series.items()
+    }
+    snapshot = request.market_data.model_copy(update={"series": empty_series})
+    empty_request = request.model_copy(update={"market_data": snapshot})
+
+    result = await BacktestRunner(NoTradeStrategy(), AllowRisk()).run(empty_request)
+
+    assert result.equity_curve == []
+    assert result.final_equity == result.initial_capital
+    assert result.metrics.max_drawdown_abs == 0.0
+    assert result.metrics.max_drawdown_pct == 0.0
+    assert result.metrics.profit_factor is None
+    assert result.metrics.expectancy_per_trade is None
+    assert result.metrics.time_in_market_pct is None
 
 
 @pytest.mark.asyncio
@@ -273,6 +393,8 @@ async def test_run_identifier_is_deterministic_for_identical_input():
     assert first.run_id == second.run_id
     assert first.input_fingerprint == second.input_fingerprint
     assert first.trades == second.trades
+    assert first.equity_curve == second.equity_curve
+    assert first.metrics == second.metrics
 
 
 @pytest.mark.asyncio

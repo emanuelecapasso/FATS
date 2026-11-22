@@ -35,9 +35,10 @@ For a directional signal, the evaluator computes:
 
 ```
 risk_budget = equity * max_risk_per_position_pct
-unit_risk = M5_close * stop_distance_pct
+unit_notional = M5_close * price_to_account_currency_rate
+unit_risk = unit_notional * stop_distance_pct
 quantity_by_risk = risk_budget / unit_risk
-quantity_by_exposure = remaining_exposure / M5_close
+quantity_by_exposure = remaining_exposure / unit_notional
 recommended_quantity = floor(min(quantity_by_risk, quantity_by_exposure) / quantity_step) * quantity_step
 ```
 

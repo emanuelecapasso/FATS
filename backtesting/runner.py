@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from backtesting.schemas import (
+    BacktestEquityPoint,
     BacktestMetrics,
     BacktestRequest,
     BacktestResult,
@@ -26,6 +27,7 @@ from quantitative.ports import RiskEvaluator, Strategy
 
 REQUIRED_TIMEFRAMES = (Timeframe.M5, Timeframe.M15, Timeframe.H1)
 M5_DURATION = timedelta(minutes=5)
+BACKTEST_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ class BacktestRunner:
         commission_rate = costs.commission_bps / 10_000.0
         slippage_rate = costs.slippage_bps / 10_000.0
         trades: list[BacktestTrade] = []
+        equity_curve: list[BacktestEquityPoint] = []
         open_position: _OpenPosition | None = None
         pending_target: _PendingTarget | None = None
         last_in_range_bar = None
@@ -183,6 +186,48 @@ class BacktestRunner:
                     ),
                 )
 
+        def equity_point(timestamp: datetime, mark_price: float) -> BacktestEquityPoint:
+            realized_pnl = sum(trade.net_pnl for trade in trades)
+            cumulative_commission = sum(trade.commission for trade in trades)
+            cumulative_slippage = sum(trade.slippage_cost for trade in trades)
+            unrealized_pnl = 0.0
+            gross_exposure = request.account_state.gross_exposure
+            direction = SignalDirection.FLAT
+            quantity = 0.0
+
+            if open_position is not None:
+                if mark_price <= 0:
+                    raise InvalidMarketDataError(
+                        "Backtest mark prices must be positive while a position is open."
+                    )
+                sign = 1.0 if open_position.side == SignalDirection.LONG else -1.0
+                conversion = request.account_state.price_to_account_currency_rate
+                unrealized_pnl = (
+                    sign
+                    * (mark_price - open_position.market_entry_price)
+                    * open_position.quantity
+                    * conversion
+                    - open_position.entry_commission
+                    - open_position.entry_slippage
+                )
+                cumulative_commission += open_position.entry_commission
+                cumulative_slippage += open_position.entry_slippage
+                gross_exposure += mark_price * open_position.quantity * conversion
+                direction = open_position.side
+                quantity = open_position.quantity
+
+            return BacktestEquityPoint(
+                timestamp=timestamp,
+                equity=request.initial_capital + realized_pnl + unrealized_pnl,
+                realized_pnl=realized_pnl,
+                unrealized_pnl=unrealized_pnl,
+                cumulative_commission=cumulative_commission,
+                cumulative_slippage_cost=cumulative_slippage,
+                gross_exposure=gross_exposure,
+                position_direction=direction,
+                position_quantity=quantity,
+            )
+
         for bar in closed_m5:
             if bar.timestamp > request.end:
                 break
@@ -196,6 +241,7 @@ class BacktestRunner:
 
             if bar.timestamp < request.start:
                 continue
+            equity_curve.append(equity_point(bar.timestamp, bar.close))
             if bar.timestamp in gap_timestamps:
                 skipped_decisions += 1
                 continue
@@ -276,6 +322,16 @@ class BacktestRunner:
                 last_in_range_bar.timestamp,
                 ["end_of_period_liquidation"],
             )
+            terminal_point = equity_point(
+                last_in_range_bar.timestamp, last_in_range_bar.close
+            )
+            if (
+                equity_curve
+                and equity_curve[-1].timestamp == last_in_range_bar.timestamp
+            ):
+                equity_curve[-1] = terminal_point
+            else:
+                equity_curve.append(terminal_point)
 
         gross_pnl = sum(trade.gross_pnl for trade in trades)
         net_pnl = sum(trade.net_pnl for trade in trades)
@@ -285,13 +341,39 @@ class BacktestRunner:
         losing = sum(1 for trade in trades if trade.net_pnl < 0)
         win_rate = winning / len(trades) if trades else 0.0
 
-        equity = request.initial_capital
-        peak_equity = equity
-        max_drawdown = 0.0
-        for trade in trades:
-            equity += trade.net_pnl
-            peak_equity = max(peak_equity, equity)
-            max_drawdown = max(max_drawdown, peak_equity - equity)
+        equity_values = [
+            request.initial_capital,
+            *(point.equity for point in equity_curve),
+        ]
+        peak_equity = request.initial_capital
+        max_drawdown_abs = 0.0
+        max_drawdown_pct = 0.0
+        for equity_value in equity_values[1:]:
+            peak_equity = max(peak_equity, equity_value)
+            drawdown = peak_equity - equity_value
+            max_drawdown_abs = max(max_drawdown_abs, drawdown)
+            max_drawdown_pct = max(max_drawdown_pct, drawdown / peak_equity)
+
+        winning_net_pnl = sum(trade.net_pnl for trade in trades if trade.net_pnl > 0)
+        losing_net_pnl = abs(
+            sum(trade.net_pnl for trade in trades if trade.net_pnl < 0)
+        )
+        profit_factor = winning_net_pnl / losing_net_pnl if losing_net_pnl > 0 else None
+        expectancy_per_trade = net_pnl / len(trades) if trades else None
+        time_in_market_pct = (
+            sum(point.position_quantity > 0 for point in equity_curve)
+            / len(equity_curve)
+            if equity_curve
+            else None
+        )
+        average_gross_exposure = (
+            sum(point.gross_exposure for point in equity_curve) / len(equity_curve)
+            if equity_curve
+            else 0.0
+        )
+        max_gross_exposure = max(
+            (point.gross_exposure for point in equity_curve), default=0.0
+        )
 
         input_fingerprint, run_id = self._fingerprints(request)
         metrics = BacktestMetrics(
@@ -303,8 +385,17 @@ class BacktestRunner:
             net_pnl=net_pnl,
             total_commission=total_commission,
             total_slippage_cost=total_slippage,
-            return_pct=net_pnl / request.initial_capital * 100.0,
-            closed_trade_max_drawdown=max_drawdown,
+            return_pct=(
+                (request.initial_capital + net_pnl) / request.initial_capital - 1.0
+            )
+            * 100.0,
+            max_drawdown_abs=max_drawdown_abs,
+            max_drawdown_pct=max_drawdown_pct,
+            profit_factor=profit_factor,
+            expectancy_per_trade=expectancy_per_trade,
+            time_in_market_pct=time_in_market_pct,
+            average_gross_exposure=average_gross_exposure,
+            max_gross_exposure=max_gross_exposure,
             skipped_decisions=skipped_decisions,
             temporal_gaps=temporal_gaps,
         )
@@ -312,6 +403,7 @@ class BacktestRunner:
         return BacktestResult(
             run_id=run_id,
             input_fingerprint=input_fingerprint,
+            backtest_version=BACKTEST_VERSION,
             pair=request.market_data.pair,
             start=request.start,
             end=request.end,
@@ -325,6 +417,7 @@ class BacktestRunner:
             initial_capital=request.initial_capital,
             final_equity=request.initial_capital + net_pnl,
             metrics=metrics,
+            equity_curve=equity_curve,
             trades=trades,
             unfilled_final_signal=unfilled_final_signal,
         )
@@ -426,6 +519,7 @@ class BacktestRunner:
             "strategy_id": self.strategy.strategy_id,
             "strategy_version": self.strategy.version,
             "engine_version": ENGINE_VERSION,
+            "backtest_version": BACKTEST_VERSION,
         }
         run_id = hashlib.sha256(
             canonical_json_payload(run_payload).encode("utf-8")

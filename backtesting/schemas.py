@@ -71,6 +71,25 @@ class BacktestTrade(StrictBaseModel):
         return validate_utc_datetime(value)
 
 
+class BacktestEquityPoint(StrictBaseModel):
+    """Account-currency valuation at one observed closed M5 event."""
+
+    timestamp: datetime
+    equity: float = Field(..., allow_inf_nan=False)
+    realized_pnl: float = Field(..., allow_inf_nan=False)
+    unrealized_pnl: float = Field(..., allow_inf_nan=False)
+    cumulative_commission: float = Field(..., ge=0.0, allow_inf_nan=False)
+    cumulative_slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    position_direction: SignalDirection
+    position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+
+    @field_validator("timestamp")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
 class BacktestMetrics(StrictBaseModel):
     trade_count: int = Field(..., ge=0)
     winning_trades: int = Field(..., ge=0)
@@ -81,7 +100,15 @@ class BacktestMetrics(StrictBaseModel):
     total_commission: float = Field(..., ge=0.0, allow_inf_nan=False)
     total_slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
     return_pct: float = Field(..., allow_inf_nan=False)
-    closed_trade_max_drawdown: float = Field(..., ge=0.0, allow_inf_nan=False)
+    max_drawdown_abs: float = Field(..., ge=0.0, allow_inf_nan=False)
+    max_drawdown_pct: float = Field(..., ge=0.0, allow_inf_nan=False)
+    average_gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    max_gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    profit_factor: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    expectancy_per_trade: float | None = Field(default=None, allow_inf_nan=False)
+    time_in_market_pct: float | None = Field(
+        default=None, ge=0.0, le=1.0, allow_inf_nan=False
+    )
     skipped_decisions: int = Field(..., ge=0)
     temporal_gaps: int = Field(..., ge=0)
 
@@ -89,6 +116,7 @@ class BacktestMetrics(StrictBaseModel):
 class BacktestResult(StrictBaseModel):
     run_id: str
     input_fingerprint: str
+    backtest_version: str
     pair: str
     start: datetime
     end: datetime
@@ -102,6 +130,7 @@ class BacktestResult(StrictBaseModel):
     initial_capital: float = Field(..., gt=0.0, allow_inf_nan=False)
     final_equity: float = Field(..., allow_inf_nan=False)
     metrics: BacktestMetrics
+    equity_curve: list[BacktestEquityPoint] = Field(default_factory=list)
     trades: list[BacktestTrade] = Field(default_factory=list)
     unfilled_final_signal: bool = False
 
