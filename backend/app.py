@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from agents.ports.market_data import MarketDataProvider, MarketDataStorage
 from backend.broker_routes import router as broker_router
+from backend.evaluator import build_default_evaluator
 from backend.routes import router
 from core.schemas import ErrorCode, ErrorResponse
 from data.market_calendar import ForexMarketCalendar
@@ -98,4 +99,4 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(evaluator=build_default_evaluator())
