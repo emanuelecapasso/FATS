@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.1"
+CURRENT_SCHEMA_VERSION = "1.2"
 
 
 # --- ENUMS ---
@@ -35,8 +35,10 @@ class DataQuality(str, Enum):
 
 
 class VolumeType(str, Enum):
-    TRADED = "traded"            # Volume reale negoziato (es. Azioni, Crypto)
-    TICK_COUNT = "tick_count"    # Numero di tick/variazioni di prezzo (comune nel Forex OTC)
+    TRADED = "traded"  # Volume reale negoziato (es. Azioni, Crypto)
+    TICK_COUNT = (
+        "tick_count"  # Numero di tick/variazioni di prezzo (comune nel Forex OTC)
+    )
     UNAVAILABLE = "unavailable"  # Dato non disponibile (es. Forex Midpoint)
 
 
@@ -84,6 +86,7 @@ class MarketBar(StrictBaseModel):
     close: float = Field(..., allow_inf_nan=False)
     volume: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
     volume_type: VolumeType = Field(default=VolumeType.UNAVAILABLE)
+    is_closed: bool | None = Field(default=None, description="Indica se la barra è chiusa. Se None, lo stato è ignoto.")
 
     @model_validator(mode="before")
     @classmethod
@@ -114,9 +117,13 @@ class MarketBar(StrictBaseModel):
             )
 
         if self.volume is None and self.volume_type != VolumeType.UNAVAILABLE:
-            raise ValueError("Se il volume è None, volume_type deve essere UNAVAILABLE.")
+            raise ValueError(
+                "Se il volume è None, volume_type deve essere UNAVAILABLE."
+            )
         if self.volume is not None and self.volume_type == VolumeType.UNAVAILABLE:
-            raise ValueError("Se il volume è valorizzato, volume_type non può essere UNAVAILABLE.")
+            raise ValueError(
+                "Se il volume è valorizzato, volume_type non può essere UNAVAILABLE."
+            )
 
         return self
 
@@ -169,17 +176,6 @@ class MarketDataSnapshot(StrictBaseModel):
 
 
 class StrategyConfiguration(StrictBaseModel):
-    """
-    Configurazione base per la valutazione quantitativa.
-
-    NOTA PROVVISORIA:
-    L'attributo `parameters` utilizza temporaneamente un dict generico per sbloccare
-    l'integrazione P1. Nelle issue dedicate alle singole strategie (Issue 5 e 6),
-    questo campo verrà rifattorizzato in modelli Pydantic strettamente tipizzati
-    (es. TrendFollowingConfig, MeanReversionConfig) per esplicitare e validare
-    nomi e soglie dei parametri.
-    """
-
     strategy_id: StrategyId
     parameters: dict[str, float] = Field(
         default_factory=dict,
@@ -210,14 +206,27 @@ class RiskDecision(StrictBaseModel):
 
 
 class EvaluationResponse(StrictBaseModel):
-    schema_version: Literal["1.1"] = Field(
+    schema_version: str = Field(
         default=CURRENT_SCHEMA_VERSION,
+        pattern=rf"^{SCHEMA_MAJOR_VERSION}\.\d+$",
         description="Versione dello schema con cui è stato serializzato l'output quantitativo.",
     )
     pair: str
     timestamp: datetime
     signal: Signal
     risk_decision: RiskDecision
+
+    strategy_id: str | None = Field(
+        default=None,
+        description="Identificativo univoco della strategia che ha prodotto il segnale",
+    )
+    strategy_version: str | None = Field(
+        default=None, description="Versione dell'implementazione della strategia"
+    )
+    engine_version: str | None = Field(
+        default=None,
+        description="Versione del QuantitativeEngine che ha orchestrato il calcolo",
+    )
 
     @field_validator("timestamp")
     @classmethod

@@ -1,12 +1,48 @@
-"""Ports used by the backend to call quantitative evaluation."""
-
 from typing import Protocol
 
-from core.schemas import EvaluationRequest, EvaluationResponse
+from core.schemas import (
+    EvaluationRequest,
+    EvaluationResponse,
+    MarketDataSnapshot,
+    RiskDecision,
+    Signal,
+    StrategyConfiguration,
+    Timeframe,
+)
+
+
+class Strategy(Protocol):
+    """Porto per l'algoritmo di trading (generazione segnali)."""
+
+    @property
+    def strategy_id(self) -> str:
+        ...
+
+    @property
+    def version(self) -> str:
+        ...
+
+    def required_history(
+        self, configuration: StrategyConfiguration
+    ) -> dict[Timeframe, int]:
+        """Numero minimo di barre chiuse richieste per ciascun timeframe."""
+        ...
+
+    def evaluate(self, snapshot: MarketDataSnapshot, configuration: StrategyConfiguration) -> Signal:
+        """Valuta il mercato tramite lo snapshot e la configurazione, restituendo un Signal canonico."""
+        ...
+
+
+class RiskEvaluator(Protocol):
+    """Porto per il modulo di risk management e position sizing."""
+
+    def evaluate(self, signal: Signal, configuration: StrategyConfiguration) -> RiskDecision:
+        """Valuta un segnale basandosi sulla configurazione fornita nella richiesta."""
+        ...
 
 
 class QuantitativeEvaluator(Protocol):
-    """Asynchronous deterministic evaluation boundary injected into the API."""
+    """Porto in ingresso invocato dal layer API (Backend)."""
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
-        """Evaluate a validated request and return canonical signal and risk output."""
+        ...

@@ -11,3 +11,15 @@ class InsufficientDataError(QuantitativeEvaluationError):
 
 class QuantitativeEngineUnavailableError(QuantitativeEvaluationError):
     """Raised when the quantitative engine or a required dependency is unavailable."""
+
+
+class QuantitativeError(Exception):
+    """Eccezione base per gli errori del dominio quantitativo."""
+
+
+class InvalidMarketDataError(QuantitativeError):
+    """Sollevata quando i dati di mercato contengono anomalie (es. look-ahead, dati STALE)."""
+
+
+class InsufficientHistoryError(QuantitativeError):
+    """Sollevata quando le barre disponibili non soddisfano i requisiti di warm-up."""
