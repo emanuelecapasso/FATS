@@ -1,6 +1,6 @@
 """Historical backtesting engine."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -46,6 +46,7 @@ class BacktestingEngine:
         calendar: ForexMarketCalendar | None = None,
         risk_manager: RiskManager | None = None,
         execution_simulator: ExecutionSimulator | None = None,
+        fill_policy: Callable[[Order, MarketBar], float | None] | None = None,
     ) -> None:
         if initial_balance <= 0:
             raise ValueError("Initial balance must be positive")
@@ -76,6 +77,7 @@ class BacktestingEngine:
         self.calendar = calendar or ForexMarketCalendar()
         self.risk_manager = risk_manager or RiskManager()
         self.execution_simulator = execution_simulator or ExecutionSimulator()
+        self.fill_policy = fill_policy
 
     @staticmethod
     def _validate_bars(bars: Sequence[MarketBar]) -> None:
@@ -132,27 +134,32 @@ class BacktestingEngine:
         executions: list[Execution] = []
         equity_curve: list[tuple[datetime, float]] = []
 
-        # Position-specific protective levels.
         protective_levels: dict[str, tuple[float, float | None]] = {}
 
         pending_signal = None
+        active_entry_order_id: str | None = None
+        active_position_id: str | None = None
+        active_signal = None
+
         peak_equity = self.initial_balance
 
         def execute_order(
             order: Order,
             price: float,
             timestamp: datetime,
+            fill_quantity: float | None = None,
         ) -> Execution:
             execution = self.execution_simulator.execute(
                 order=order,
                 market_price=price,
                 pip_size=self.pip_size,
                 executed_at=timestamp,
+                fill_quantity=fill_quantity,
             )
 
             order_manager.record_fill(order.order_id, execution.quantity)
-
             executions.append(execution)
+
             return execution
 
         def close_position(
@@ -184,6 +191,75 @@ class BacktestingEngine:
             portfolio.close_position(position_id, execution)
             protective_levels.pop(position_id, None)
 
+        def cancel_residual_entry() -> None:
+            nonlocal active_entry_order_id, active_signal
+
+            if active_entry_order_id is None:
+                return
+
+            order = order_manager.get_order(active_entry_order_id)
+
+            if order.status in (
+                OrderStatus.PENDING,
+                OrderStatus.PARTIALLY_FILLED,
+            ):
+                order_manager.cancel_order(order.order_id)
+
+            active_entry_order_id = None
+            active_signal = None
+
+        def process_entry_fill(bar: MarketBar) -> None:
+            nonlocal active_entry_order_id, active_position_id
+
+            if active_entry_order_id is None:
+                return
+
+            order = order_manager.get_order(active_entry_order_id)
+
+            if order.status not in (
+                OrderStatus.PENDING,
+                OrderStatus.PARTIALLY_FILLED,
+            ):
+                active_entry_order_id = None
+                return
+
+            remaining_quantity = order.quantity - order.filled_quantity
+
+            if self.fill_policy is None:
+                fill_quantity = remaining_quantity
+            else:
+                fill_quantity = self.fill_policy(order, bar)
+
+            # None means that no execution occurs on this candle.
+            if fill_quantity is None:
+                return
+
+            execution = execute_order(
+                order,
+                bar.open,
+                bar.timestamp,
+                fill_quantity,
+            )
+
+            if active_position_id is None:
+                position = portfolio.open_position(execution)
+                active_position_id = position.position_id
+
+                protective_levels[active_position_id] = (
+                    active_signal.stop_loss,
+                    active_signal.take_profit,
+                )
+            else:
+                portfolio.add_to_position(
+                    active_position_id,
+                    execution,
+                )
+
+            updated_order = order_manager.get_order(order.order_id)
+
+            if updated_order.status == OrderStatus.FILLED:
+                active_entry_order_id = None
+
         for index, bar in enumerate(bars):
             timestamp = bar.timestamp
 
@@ -193,7 +269,7 @@ class BacktestingEngine:
             ):
                 continue
 
-            # 1. Execute the signal generated at the previous candle close.
+            # 1. Create an entry order from the previous candle's signal.
             if pending_signal is not None and not portfolio.positions:
                 signal = pending_signal
                 pending_signal = None
@@ -226,21 +302,11 @@ class BacktestingEngine:
                         quote_to_account_rate=self.quote_to_account_rate,
                     )
 
-                    if not decision.approved:
-                        order_manager.reject_order(order.order_id)
+                    if decision.approved:
+                        active_entry_order_id = order.order_id
+                        active_signal = signal
                     else:
-                        execution = execute_order(
-                            order,
-                            bar.open,
-                            timestamp,
-                        )
-
-                        position = portfolio.open_position(execution)
-
-                        protective_levels[position.position_id] = (
-                            signal.stop_loss,
-                            signal.take_profit,
-                        )
+                        order_manager.reject_order(order.order_id)
 
                 except ValueError:
                     current_order = order_manager.get_order(order.order_id)
@@ -248,7 +314,10 @@ class BacktestingEngine:
                     if current_order.status == OrderStatus.PENDING:
                         order_manager.reject_order(order.order_id)
 
-            # 2. Check stop-loss and take-profit against the current OHLC bar.
+            # 2. Execute the active entry order, including residual quantities.
+            process_entry_fill(bar)
+
+            # 3. Check stop-loss and take-profit.
             for position_id, position in list(portfolio.positions.items()):
                 stop_loss, take_profit = protective_levels[position_id]
 
@@ -285,7 +354,11 @@ class BacktestingEngine:
                         timestamp,
                     )
 
-            # 3. Mark open positions to market at candle close.
+                    if position_id == active_position_id:
+                        active_position_id = None
+                        cancel_residual_entry()
+
+            # 4. Mark open positions to market.
             portfolio.update_market_prices({self.pair: bar.close})
 
             current_equity = portfolio.equity
@@ -293,14 +366,21 @@ class BacktestingEngine:
 
             equity_curve.append((timestamp, current_equity))
 
-            # 4. Generate a signal using only candles already closed.
-            if not portfolio.positions and index < len(bars) - 1:
+            # 5. Generate signals using only closed candles.
+            if (
+                not portfolio.positions
+                and active_entry_order_id is None
+                and index < len(bars) - 1
+            ):
                 signal = strategy.generate_signal(bars[: index + 1])
 
                 if signal.direction != SignalDirection.FLAT:
                     pending_signal = signal
 
-        # 5. Liquidate any remaining position at the last valid candle close.
+        # 6. Cancel any unfilled residual quantity.
+        cancel_residual_entry()
+
+        # 7. Liquidate remaining positions at the last valid candle close.
         valid_bars = [
             bar
             for bar in bars
@@ -312,9 +392,8 @@ class BacktestingEngine:
 
         if portfolio.positions and valid_bars:
             last_bar = valid_bars[-1]
-            position_ids = list(portfolio.positions)
 
-            for position_id in position_ids:
+            for position_id in list(portfolio.positions):
                 close_position(
                     position_id,
                     last_bar.close,

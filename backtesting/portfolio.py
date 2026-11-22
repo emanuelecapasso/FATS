@@ -66,6 +66,43 @@ class Portfolio(StrictBaseModel):
 
         return position
 
+    def add_to_position(
+        self,
+        position_id: str,
+        execution: Execution,
+    ) -> Position:
+        """Aggregate an additional fill into an existing position."""
+        position = self.positions.get(position_id)
+
+        if position is None:
+            raise ValueError(f"Position not found: {position_id}")
+
+        if execution.pair != position.pair or execution.side != position.side:
+            raise ValueError("Execution does not match position")
+
+        total_quantity = position.quantity + execution.quantity
+
+        average_entry = (
+            position.entry_price * position.quantity
+            + execution.price * execution.quantity
+        ) / total_quantity
+
+        updated = position.model_copy(
+            update={
+                "quantity": total_quantity,
+                "entry_price": average_entry,
+                "current_price": execution.price,
+            }
+        )
+
+        costs = execution.spread_cost + execution.commission + execution.slippage
+
+        self.positions[position_id] = updated
+        self.balance -= costs
+        self.realized_pnl -= costs
+
+        return updated
+
     def close_position(
         self,
         position_id: str,
