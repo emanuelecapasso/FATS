@@ -230,7 +230,6 @@ class BacktestingEngine:
             else:
                 fill_quantity = self.fill_policy(order, bar)
 
-            # None means that no execution occurs on this candle.
             if fill_quantity is None:
                 return
 
@@ -269,8 +268,39 @@ class BacktestingEngine:
             ):
                 continue
 
-            # 1. Create an entry order from the previous candle's signal.
-            if pending_signal is not None and not portfolio.positions:
+            # 1. Check existing positions for opening gaps.
+            for position_id, position in list(portfolio.positions.items()):
+                stop_loss, take_profit = protective_levels[position_id]
+                gap_exit_price = None
+
+                if position.side == OrderSide.BUY:
+                    if bar.open <= stop_loss or (
+                        take_profit is not None and bar.open >= take_profit
+                    ):
+                        gap_exit_price = bar.open
+                else:
+                    if bar.open >= stop_loss or (
+                        take_profit is not None and bar.open <= take_profit
+                    ):
+                        gap_exit_price = bar.open
+
+                if gap_exit_price is not None:
+                    close_position(
+                        position_id,
+                        gap_exit_price,
+                        timestamp,
+                    )
+
+                    if position_id == active_position_id:
+                        active_position_id = None
+                        cancel_residual_entry()
+
+            # 2. Create an entry order from the previous candle's signal.
+            if (
+                pending_signal is not None
+                and not portfolio.positions
+                and active_entry_order_id is None
+            ):
                 signal = pending_signal
                 pending_signal = None
 
@@ -314,59 +344,52 @@ class BacktestingEngine:
                     if current_order.status == OrderStatus.PENDING:
                         order_manager.reject_order(order.order_id)
 
-            # 2. Execute the active entry order, including residual quantities.
+            # 3. Execute entry or residual quantity.
             process_entry_fill(bar)
 
-            # 3. Check stop-loss and take-profit.
+            # 4. Check intrabar stop-loss and take-profit.
             for position_id, position in list(portfolio.positions.items()):
                 stop_loss, take_profit = protective_levels[position_id]
 
                 exit_price = None
 
                 if position.side == OrderSide.BUY:
-                    if (
-                        bar.open <= stop_loss
-                        or take_profit is not None
-                        and bar.open >= take_profit
-                    ):
-                        exit_price = bar.open
-                    elif bar.low <= stop_loss:
+                    stop_hit = bar.low <= stop_loss
+                    take_hit = take_profit is not None and bar.high >= take_profit
+
+                    if stop_hit:
                         exit_price = stop_loss
-                    elif take_profit is not None and bar.high >= take_profit:
+                    elif take_hit:
                         exit_price = take_profit
 
                 else:
-                    if (
-                        bar.open >= stop_loss
-                        or take_profit is not None
-                        and bar.open <= take_profit
-                    ):
-                        exit_price = bar.open
-                    elif bar.high >= stop_loss:
+                    stop_hit = bar.high >= stop_loss
+                    take_hit = take_profit is not None and bar.low <= take_profit
+
+                    if stop_hit:
                         exit_price = stop_loss
-                    elif take_profit is not None and bar.low <= take_profit:
+                    elif take_hit:
                         exit_price = take_profit
 
                 if exit_price is not None:
                     close_position(
                         position_id,
                         exit_price,
-                        timestamp,
+                        timestamp + self.candle_duration,
                     )
 
                     if position_id == active_position_id:
                         active_position_id = None
                         cancel_residual_entry()
 
-            # 4. Mark open positions to market.
+            # 5. Update market prices and equity.
             portfolio.update_market_prices({self.pair: bar.close})
 
             current_equity = portfolio.equity
+            equity_curve.append((timestamp, current_equity))
             peak_equity = max(peak_equity, current_equity)
 
-            equity_curve.append((timestamp, current_equity))
-
-            # 5. Generate signals using only closed candles.
+            # 6. Generate signals using only completed candles.
             if (
                 not portfolio.positions
                 and active_entry_order_id is None
@@ -377,10 +400,10 @@ class BacktestingEngine:
                 if signal.direction != SignalDirection.FLAT:
                     pending_signal = signal
 
-        # 6. Cancel any unfilled residual quantity.
+        # 7. Cancel any unfilled residual quantity.
         cancel_residual_entry()
 
-        # 7. Liquidate remaining positions at the last valid candle close.
+        # 8. Liquidate remaining positions at the last valid candle close.
         valid_bars = [
             bar
             for bar in bars

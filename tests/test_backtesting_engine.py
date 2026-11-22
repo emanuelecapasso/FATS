@@ -225,3 +225,45 @@ def test_execution_costs_are_applied(engine, historical_bars):
     )
     assert total_costs > 0
     assert result.final_balance == pytest.approx(10_000 + 6 - total_costs)
+
+
+def test_gap_stop_cancels_remaining_entry_quantity(
+    engine,
+    historical_bars,
+):
+    bars = list(historical_bars)
+
+    bars[2] = make_bar(
+        bars[2].timestamp,
+        1.0940,
+        1.0960,
+        1.0930,
+        1.0950,
+    )
+
+    fill_calls = []
+
+    def partial_fill(order, bar):
+        fill_calls.append(bar.timestamp)
+        return 2_000
+
+    engine.fill_policy = partial_fill
+
+    strategy = FixedStrategy(
+        BacktestSignal(
+            direction=SignalDirection.LONG,
+            quantity=4_000,
+            stop_loss=1.0950,
+            take_profit=1.1100,
+        )
+    )
+
+    result = engine.run(bars, strategy)
+
+    entry_order = next(order for order in result.orders if order.side.value == "buy")
+
+    assert entry_order.status == OrderStatus.CANCELLED
+    assert entry_order.filled_quantity == 2_000
+    assert len(fill_calls) == 1
+    assert result.executions[0].quantity == 2_000
+    assert result.executions[-1].price == 1.0940
