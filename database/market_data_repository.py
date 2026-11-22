@@ -6,7 +6,7 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from core.schemas import MarketBar, MarketDataSnapshot, Timeframe
+from core.schemas import MarketBar, MarketDataSnapshot, Timeframe, VolumeType
 
 
 class MarketDataRepository:
@@ -34,7 +34,9 @@ class MarketDataRepository:
                 high REAL NOT NULL,
                 low REAL NOT NULL,
                 close REAL NOT NULL,
-                volume REAL NOT NULL,
+                volume REAL,
+                volume_type TEXT NOT NULL DEFAULT 'unavailable',
+                is_closed INTEGER,
                 source_kind TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 received_at TEXT NOT NULL,
@@ -100,7 +102,17 @@ class MarketDataRepository:
                 "provider_id",
             ]
 
-            if primary_key == expected_primary_key:
+            volume_column = next(
+                column for column in columns if column["name"] == "volume"
+            )
+
+            schema_is_current = (
+                primary_key == expected_primary_key
+                and {"volume_type", "is_closed"}.issubset(column_names)
+                and volume_column["notnull"] == 0
+            )
+
+            if schema_is_current:
                 return
 
             # The transaction ensures that a failed migration leaves the
@@ -116,11 +128,15 @@ class MarketDataRepository:
                 INSERT INTO market_bars (
                     pair, timeframe, timestamp,
                     open, high, low, close, volume,
+                    volume_type, is_closed,
                     source_kind, provider_id, received_at, quality
                 )
                 SELECT
                     pair, timeframe, timestamp,
                     open, high, low, close, volume,
+                    CASE WHEN volume IS NULL
+                         THEN 'unavailable' ELSE 'traded' END,
+                    NULL,
                     source_kind, provider_id, received_at, quality
                 FROM market_bars_legacy
                 """
@@ -164,6 +180,8 @@ class MarketDataRepository:
                         bar.low,
                         bar.close,
                         bar.volume,
+                        bar.volume_type.value,
+                        None if bar.is_closed is None else int(bar.is_closed),
                         provenance.kind.value,
                         provenance.provider_id,
                         provenance.received_at.isoformat(),
@@ -180,9 +198,10 @@ class MarketDataRepository:
                 INSERT INTO market_bars (
                     pair, timeframe, timestamp,
                     open, high, low, close, volume,
+                    volume_type, is_closed,
                     source_kind, provider_id, received_at, quality
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(pair, timeframe, timestamp, provider_id)
                 DO UPDATE SET
                     open = excluded.open,
@@ -190,6 +209,8 @@ class MarketDataRepository:
                     low = excluded.low,
                     close = excluded.close,
                     volume = excluded.volume,
+                    volume_type = excluded.volume_type,
+                    is_closed = excluded.is_closed,
                     source_kind = excluded.source_kind,
                     received_at = excluded.received_at,
                     quality = excluded.quality
@@ -258,7 +279,8 @@ class MarketDataRepository:
                     provider_id = providers[0]["provider_id"]
 
             query = """
-                SELECT timestamp, open, high, low, close, volume
+                SELECT timestamp, open, high, low, close, volume,
+                       volume_type, is_closed
                 FROM market_bars
                 WHERE pair = ?
                   AND timeframe = ?
@@ -287,6 +309,12 @@ class MarketDataRepository:
                 low=record["low"],
                 close=record["close"],
                 volume=record["volume"],
+                volume_type=VolumeType(record["volume_type"]),
+                is_closed=(
+                    None
+                    if record["is_closed"] is None
+                    else bool(record["is_closed"])
+                ),
             )
             for record in records
         ]
