@@ -13,6 +13,10 @@ from core.schemas import (
     StrategyId,
     Timeframe,
 )
+from quantitative.exceptions import (
+    InsufficientDataError,
+    QuantitativeEngineUnavailableError,
+)
 from quantitative.ports import QuantitativeEvaluator
 
 
@@ -32,7 +36,21 @@ class FakeEvaluator(QuantitativeEvaluator):
                 reasons=["WITHIN_RISK_LIMITS"],
                 recommended_quantity=10000.0,
             ),
+            # L'engine in produzione li popolerà, qui li simuliamo per l'API mockata
+            strategy_id=request.configuration.strategy_id,
+            strategy_version="1.0.0",
+            engine_version="1.1.5",
         )
+
+
+class InsufficientDataEvaluator:
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
+        raise InsufficientDataError("Servono più barre storiche.")
+
+
+class UnavailableEvaluator:
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
+        raise QuantitativeEngineUnavailableError("Motore non disponibile.")
 
 
 def _sample_payload() -> dict:
@@ -78,10 +96,58 @@ def test_post_evaluation_success() -> None:
     response = client.post("/api/v1/evaluations", json=_sample_payload())
     assert response.status_code == 200
     body = response.json()
+
     assert body["pair"] == "EUR_USD"
+    # La risposta espone la versione corrente dello schema.
     assert body["schema_version"] == CURRENT_SCHEMA_VERSION
     assert body["signal"]["direction"] == "long"
     assert body["risk_decision"]["approved"] is True
+
+    # Assicura che i nuovi metadati opzionali vengano esposti dall'API
+    assert "strategy_id" in body
+    assert "strategy_version" in body
+    assert "engine_version" in body
+
+
+def test_invalid_request_returns_documented_error() -> None:
+    payload = _sample_payload()
+    del payload["configuration"]["strategy_id"]
+
+    response = TestClient(create_app(evaluator=FakeEvaluator())).post(
+        "/api/v1/evaluations", json=payload
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "invalid_request"
+    assert body["details"]["errors"]
+
+
+def test_insufficient_data_returns_documented_error() -> None:
+    response = TestClient(create_app(evaluator=InsufficientDataEvaluator())).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "insufficient_data"
+
+
+def test_unavailable_engine_returns_documented_error() -> None:
+    response = TestClient(create_app(evaluator=UnavailableEvaluator())).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "quantitative_unavailable"
+
+
+def test_missing_evaluator_returns_documented_unavailable_error() -> None:
+    response = TestClient(create_app()).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "quantitative_unavailable"
 
 
 def test_openapi_reflects_new_market_data_snapshot_contract() -> None:
@@ -91,10 +157,23 @@ def test_openapi_reflects_new_market_data_snapshot_contract() -> None:
     openapi_schema = client.get("/openapi.json").json()
     components = openapi_schema["components"]["schemas"]
 
+    assert openapi_schema["info"]["version"] == "1.0.0"
+    assert "does not place orders" in openapi_schema["info"]["description"]
+    operation = openapi_schema["paths"]["/api/v1/evaluations"]["post"]
+    assert operation["requestBody"]["required"] is True
+    responses = operation["responses"]
+    assert "200" in responses
+    assert "422" in responses
+    assert "503" in responses
+    assert "ErrorResponse" in str(responses["422"])
+    assert "ErrorResponse" in str(responses["503"])
+
     # Verifica che EvaluationRequest contenga esattamente market_data e configuration
     req_props = components["EvaluationRequest"]["properties"]
     assert "market_data" in req_props
     assert "configuration" in req_props
+    assert "risk_configuration" in req_props
+    assert "account_state" in req_props
     assert "pair" not in req_props  # Vecchio campo piatto rimosso
 
     # Verifica che MarketDataSnapshot sia referenziato correttamente

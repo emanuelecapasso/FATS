@@ -83,6 +83,14 @@ def test_json_serialization_and_roundtrip(
     assert reconstructed.market_data.as_of.tzinfo is not None
 
 
+def test_strategy_configuration_defaults_to_flat_position() -> None:
+    configuration = StrategyConfiguration(
+        strategy_id=StrategyId.TREND_FOLLOWING,
+    )
+
+    assert configuration.current_position.value == "flat"
+
+
 def test_accepts_all_timeframes_and_sources(
     base_utc: datetime, valid_bar: MarketBar
 ) -> None:
@@ -215,10 +223,10 @@ def test_rejects_future_bars(
 @pytest.mark.parametrize(
     "o,h,l,c",
     [
-        (100.0, 99.0, 95.0, 98.0),  # High minore di Open
-        (100.0, 105.0, 101.0, 102.0),  # Low maggiore di Open
-        (100.0, 102.0, 95.0, 103.0),  # High minore di Close
-        (100.0, 105.0, 99.0, 98.0),  # Low maggiore di Close
+        (100.0, 99.0, 95.0, 98.0),
+        (100.0, 105.0, 101.0, 102.0),
+        (100.0, 102.0, 95.0, 103.0),
+        (100.0, 105.0, 99.0, 98.0),
     ],
 )
 def test_rejects_incoherent_ohlc(
@@ -246,13 +254,13 @@ def test_rejects_unknown_extra_fields(base_utc: datetime) -> None:
             low=0.9,
             close=1.1,
             volume=10.0,
-            broker_specific_spread=0.0002,  # Campo extra vietato
+            broker_specific_spread=0.0002,
         )
 
     with pytest.raises(ValidationError):
         StrategyConfiguration(
             strategy_id=StrategyId.MEAN_REVERSION,
-            unknown_flag=True,  # Campo extra vietato
+            unknown_flag=True,
         )
 
 
@@ -282,18 +290,11 @@ def test_rejects_incompatible_schema_version(
 
 
 def test_shared_models_across_packages_without_duplicates() -> None:
-    """
-    Assicura che quantitative/, backend/ e data/ importino e usino gli stessi identici
-    tipi canonici definiti in core/schemas.py senza ridefinirli localmente.
-    """
+    """Verifica che i layer condividano i modelli canonici definiti in core."""
     import backend.routes as backend_routes
 
-    # 1. Verifica che il tipo di annotazione dell'evaluator in quantitative.ports sia lo stesso di core.schemas
-    sig = inspect.signature(quant_ports.QuantitativeEvaluator.evaluate)
-    request_param = sig.parameters["request"]
-    assert request_param.annotation is EvaluationRequest
-    assert sig.return_annotation is EvaluationResponse
-
-    # 2. Verifica che le route del backend riferiscano esattamente gli stessi oggetti classe di core.schemas
+    signature = inspect.signature(quant_ports.QuantitativeEvaluator.evaluate)
+    assert signature.parameters["request"].annotation is EvaluationRequest
+    assert signature.return_annotation is EvaluationResponse
     assert backend_routes.EvaluationRequest is EvaluationRequest
     assert backend_routes.EvaluationResponse is EvaluationResponse

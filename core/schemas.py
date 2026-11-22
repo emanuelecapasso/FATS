@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.0"
+CURRENT_SCHEMA_VERSION = "1.4"
 
 
 # --- ENUMS ---
@@ -32,6 +32,14 @@ class DataQuality(str, Enum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     STALE = "stale"
+
+
+class VolumeType(str, Enum):
+    TRADED = "traded"  # Volume reale negoziato (es. Azioni, Crypto)
+    TICK_COUNT = (
+        "tick_count"  # Numero di tick/variazioni di prezzo (comune nel Forex OTC)
+    )
+    UNAVAILABLE = "unavailable"  # Dato non disponibile (es. Forex Midpoint)
 
 
 class ErrorCode(str, Enum):
@@ -76,7 +84,25 @@ class MarketBar(StrictBaseModel):
     high: float = Field(..., allow_inf_nan=False)
     low: float = Field(..., allow_inf_nan=False)
     close: float = Field(..., allow_inf_nan=False)
-    volume: float = Field(..., ge=0.0, allow_inf_nan=False)
+    volume: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    volume_type: VolumeType = Field(default=VolumeType.UNAVAILABLE)
+    is_closed: bool | None = Field(
+        default=None,
+        description="Indica se la barra è chiusa. Se None, lo stato è ignoto.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_default_volume_type(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "volume_type" not in data:
+            updated = dict(data)
+            updated["volume_type"] = (
+                VolumeType.UNAVAILABLE
+                if updated.get("volume") is None
+                else VolumeType.TRADED
+            )
+            return updated
+        return data
 
     @field_validator("timestamp")
     @classmethod
@@ -84,7 +110,7 @@ class MarketBar(StrictBaseModel):
         return validate_utc_datetime(v)
 
     @model_validator(mode="after")
-    def check_ohlc_coherence(self) -> "MarketBar":
+    def check_bar_coherence(self) -> "MarketBar":
         if not (
             self.low <= min(self.open, self.close)
             and self.high >= max(self.open, self.close)
@@ -92,6 +118,16 @@ class MarketBar(StrictBaseModel):
             raise ValueError(
                 f"OHLC incoerente per {self.timestamp}: O={self.open}, H={self.high}, L={self.low}, C={self.close}"
             )
+
+        if self.volume is None and self.volume_type != VolumeType.UNAVAILABLE:
+            raise ValueError(
+                "Se il volume è None, volume_type deve essere UNAVAILABLE."
+            )
+        if self.volume is not None and self.volume_type == VolumeType.UNAVAILABLE:
+            raise ValueError(
+                "Se il volume è valorizzato, volume_type non può essere UNAVAILABLE."
+            )
+
         return self
 
 
@@ -99,6 +135,7 @@ class DataProvenance(StrictBaseModel):
     kind: DataSourceKind
     provider_id: str = Field(..., min_length=1)
     received_at: datetime
+    price_type: str | None = Field(default=None, min_length=1)
 
     @field_validator("received_at")
     @classmethod
@@ -142,22 +179,53 @@ class MarketDataSnapshot(StrictBaseModel):
 
 
 class StrategyConfiguration(StrictBaseModel):
-    """
-    Configurazione base per la valutazione quantitativa.
-
-    NOTA PROVVISORIA:
-    L'attributo `parameters` utilizza temporaneamente un dict generico per sbloccare
-    l'integrazione P1. Nelle issue dedicate alle singole strategie (Issue 5 e 6),
-    questo campo verrà rifattorizzato in modelli Pydantic strettamente tipizzati
-    (es. TrendFollowingConfig, MeanReversionConfig) per esplicitare e validare
-    nomi e soglie dei parametri.
-    """
-
     strategy_id: StrategyId
+    current_position: SignalDirection = Field(
+        default=SignalDirection.FLAT,
+        description="Posizione attuale usata per distinguere mantenimento e uscita.",
+    )
     parameters: dict[str, float] = Field(
         default_factory=dict,
         description="PROVVISORIO: Dizionario generico per i parametri. Non rappresenta il contratto finale.",
     )
+
+
+class RiskConfiguration(StrictBaseModel):
+    """Risk ratios are fractions (0.01 = 1%); quantity_step is instrument units."""
+
+    max_risk_per_position_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_aggregate_exposure_pct: float = Field(..., gt=0.0, allow_inf_nan=False)
+    max_daily_loss_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_drawdown_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    stop_distance_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_price_age_seconds: int = Field(..., gt=0)
+    quantity_step: float = Field(..., gt=0.0, allow_inf_nan=False)
+
+
+class RiskAccountState(StrictBaseModel):
+    """Account values at a decision point; money and exposure use account currency."""
+
+    equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    daily_start_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    peak_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    price_to_account_currency_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+    position_direction: SignalDirection
+    position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_position(self) -> "RiskAccountState":
+        if (self.position_direction == SignalDirection.FLAT) != (
+            self.position_quantity == 0
+        ):
+            raise ValueError(
+                "FLAT requires zero quantity and directional positions require positive quantity."
+            )
+        if self.peak_equity < self.equity:
+            raise ValueError("peak_equity cannot be lower than equity.")
+        if self.peak_equity < self.daily_start_equity:
+            raise ValueError("peak_equity cannot be lower than daily_start_equity.")
+        return self
 
 
 class EvaluationRequest(StrictBaseModel):
@@ -168,6 +236,8 @@ class EvaluationRequest(StrictBaseModel):
     )
     market_data: MarketDataSnapshot
     configuration: StrategyConfiguration
+    risk_configuration: RiskConfiguration | None = None
+    account_state: RiskAccountState | None = None
 
 
 class Signal(StrictBaseModel):
@@ -183,14 +253,27 @@ class RiskDecision(StrictBaseModel):
 
 
 class EvaluationResponse(StrictBaseModel):
-    schema_version: Literal["1.0"] = Field(
+    schema_version: str = Field(
         default=CURRENT_SCHEMA_VERSION,
+        pattern=rf"^{SCHEMA_MAJOR_VERSION}\.\d+$",
         description="Versione dello schema con cui è stato serializzato l'output quantitativo.",
     )
     pair: str
     timestamp: datetime
     signal: Signal
     risk_decision: RiskDecision
+
+    strategy_id: str | None = Field(
+        default=None,
+        description="Identificativo univoco della strategia che ha prodotto il segnale",
+    )
+    strategy_version: str | None = Field(
+        default=None, description="Versione dell'implementazione della strategia"
+    )
+    engine_version: str | None = Field(
+        default=None,
+        description="Versione del QuantitativeEngine che ha orchestrato il calcolo",
+    )
 
     @field_validator("timestamp")
     @classmethod
