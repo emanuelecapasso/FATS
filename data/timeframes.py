@@ -17,7 +17,7 @@ def _clean_bars(bars: list[MarketBar], as_of) -> list[MarketBar]:
     for b in bars:
         if b.timestamp > as_of:
             continue
-            
+
         if b.timestamp in unique_bars:
             existing = unique_bars[b.timestamp]
             if (
@@ -28,10 +28,12 @@ def _clean_bars(bars: list[MarketBar], as_of) -> list[MarketBar]:
                 or existing.volume != b.volume
                 or existing.volume_type != b.volume_type
             ):
-                raise InvalidDataError(f"Dati conflittuali per il timestamp {b.timestamp}")
+                raise InvalidDataError(
+                    f"Dati conflittuali per il timestamp {b.timestamp}"
+                )
         else:
             unique_bars[b.timestamp] = b
-            
+
     return sorted(unique_bars.values(), key=lambda x: x.timestamp)
 
 
@@ -48,7 +50,9 @@ def _get_target_timestamp(ts, target_tf: Timeframe):
     return ts
 
 
-def _aggregate(bars: list[MarketBar], target_tf: Timeframe) -> tuple[list[MarketBar], DataQuality]:
+def _aggregate(
+    bars: list[MarketBar], target_tf: Timeframe
+) -> tuple[list[MarketBar], DataQuality]:
     if not bars:
         return [], DataQuality.MISSING
 
@@ -73,7 +77,11 @@ def _aggregate(bars: list[MarketBar], target_tf: Timeframe) -> tuple[list[Market
         vol_types = {b.volume_type for b in chunk_sorted}
         volumes = [b.volume for b in chunk_sorted]
 
-        if len(vol_types) == 1 and VolumeType.UNAVAILABLE not in vol_types and all(v is not None for v in volumes):
+        if (
+            len(vol_types) == 1
+            and VolumeType.UNAVAILABLE not in vol_types
+            and all(v is not None for v in volumes)
+        ):
             agg_volume = sum(volumes)
             agg_vol_type = next(iter(vol_types))
         else:
@@ -108,7 +116,7 @@ def align_timeframes(
     for tf, series in snapshot.series.items():
         cleaned_bars = _clean_bars(series.bars, snapshot.as_of)
         quality = series.quality if cleaned_bars else DataQuality.MISSING
-        
+
         aligned_series[tf] = TimeframeSeries(
             timeframe=tf,
             bars=cleaned_bars,

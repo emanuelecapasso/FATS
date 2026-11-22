@@ -30,9 +30,11 @@ class BrokerAdapter(MarketDataAdapter):
     def __init__(self) -> None:
         self._api_key = os.getenv("BROKER_API_KEY")
         self._base_url = os.getenv("BROKER_BASE_URL", "https://api.fake-broker.com")
-        
+
         if not self._api_key:
-            logger.warning("BROKER_API_KEY non configurata. L'adapter fallirà al fetch.")
+            logger.warning(
+                "BROKER_API_KEY non configurata. L'adapter fallirà al fetch."
+            )
 
         self._timeframe_map = {
             Timeframe.M5: "5m",
@@ -54,14 +56,14 @@ class BrokerAdapter(MarketDataAdapter):
         broker_tf = self._timeframe_map[timeframe]
 
         logger.debug(f"Richiesta dati broker per {broker_symbol} a {broker_tf}")
-        
+
         raw_payload = self._mock_http_fetch(broker_symbol, broker_tf, start, end)
 
         bars = []
         try:
             for item in raw_payload:
                 ts = datetime.fromisoformat(item["timestamp"])
-                
+
                 if not (start <= ts <= end):
                     continue
 
@@ -73,7 +75,7 @@ class BrokerAdapter(MarketDataAdapter):
                         low=float(item["l"]),
                         close=float(item["c"]),
                         volume=None,
-                        volume_type=VolumeType.UNAVAILABLE 
+                        volume_type=VolumeType.UNAVAILABLE,
                     )
                 )
         except (KeyError, ValueError) as e:
@@ -92,10 +94,12 @@ class BrokerAdapter(MarketDataAdapter):
             timeframe=timeframe,
             bars=bars,
             provenance=provenance,
-            quality=DataQuality.COMPLETE, 
+            quality=DataQuality.COMPLETE,
         )
 
-    def _mock_http_fetch(self, sym: str, tf: str, s: datetime, e: datetime) -> list[dict[str, Any]]:
+    def _mock_http_fetch(
+        self, sym: str, tf: str, s: datetime, e: datetime
+    ) -> list[dict[str, Any]]:
         """Stub per simulare il payload grezzo del broker."""
         if not self._api_key:
             raise ProviderError("Manca API_KEY del broker.")

@@ -26,7 +26,7 @@ class ExternalDataAdapter(MarketDataAdapter):
 
     def __init__(self) -> None:
         self._api_key = os.getenv("EXTERNAL_API_KEY")
-        
+
         self._timeframe_map = {
             Timeframe.M5: "5Min",
             Timeframe.M15: "15Min",
@@ -54,19 +54,19 @@ class ExternalDataAdapter(MarketDataAdapter):
         try:
             for item in raw_payload:
                 ts = datetime.fromtimestamp(item["t"], tz=UTC)
-                
+
                 if not (start <= ts <= end):
                     continue
 
                 bars.append(
                     MarketBar(
                         timestamp=ts,
-                        open=float(item["o"]),       # (o item["open"] nell'external)
+                        open=float(item["o"]),  # (o item["open"] nell'external)
                         high=float(item["h"]),
                         low=float(item["l"]),
                         close=float(item["c"]),
-                        volume=float(item["v"]),     # (o item["vol"] nell'external)
-                        volume_type=VolumeType.TRADED 
+                        volume=float(item["v"]),  # (o item["vol"] nell'external)
+                        volume_type=VolumeType.TRADED,
                     )
                 )
         except (KeyError, ValueError, TypeError) as e:
@@ -88,7 +88,9 @@ class ExternalDataAdapter(MarketDataAdapter):
             quality=DataQuality.COMPLETE,
         )
 
-    def _mock_http_fetch(self, sym: str, tf: str, s: datetime, e: datetime) -> list[dict[str, Any]]:
+    def _mock_http_fetch(
+        self, sym: str, tf: str, s: datetime, e: datetime
+    ) -> list[dict[str, Any]]:
         """Stub per simulare il payload grezzo esterno."""
         if not self._api_key:
             raise ProviderError("Manca API_KEY del provider esterno.")

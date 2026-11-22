@@ -32,6 +32,10 @@ class FakeEvaluator(QuantitativeEvaluator):
                 reasons=["WITHIN_RISK_LIMITS"],
                 recommended_quantity=10000.0,
             ),
+            # L'engine in produzione li popolerà, qui li simuliamo per l'API mockata
+            strategy_id=request.configuration.strategy_id,
+            strategy_version="1.0.0",
+            engine_version="1.1.5",
         )
 
 
@@ -78,10 +82,18 @@ def test_post_evaluation_success() -> None:
     response = client.post("/api/v1/evaluations", json=_sample_payload())
     assert response.status_code == 200
     body = response.json()
+
     assert body["pair"] == "EUR_USD"
+    # Asserzione esplicita sulla versione 1.2 per prevenire regressioni
+    assert body["schema_version"] == "1.2"
     assert body["schema_version"] == CURRENT_SCHEMA_VERSION
     assert body["signal"]["direction"] == "long"
     assert body["risk_decision"]["approved"] is True
+
+    # Assicura che i nuovi metadati opzionali vengano esposti dall'API
+    assert "strategy_id" in body
+    assert "strategy_version" in body
+    assert "engine_version" in body
 
 
 def test_openapi_reflects_new_market_data_snapshot_contract() -> None:

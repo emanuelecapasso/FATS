@@ -14,14 +14,14 @@ class MarketDataService:
     """
     Servizio di composizione che orchestra il recupero dei dati storici.
     Costruisce un MarketDataSnapshot richiedendo le serie necessarie agli adapter.
-    Implementa una logica di fallback esplicita, senza mai mescolare dati di 
+    Implementa una logica di fallback esplicita, senza mai mescolare dati di
     provider diversi all'interno dello stesso timeframe.
     """
 
     def __init__(
-        self, 
-        primary_adapter: MarketDataAdapter, 
-        fallback_adapter: MarketDataAdapter | None = None
+        self,
+        primary_adapter: MarketDataAdapter,
+        fallback_adapter: MarketDataAdapter | None = None,
     ) -> None:
         self.primary = primary_adapter
         self.fallback = fallback_adapter
@@ -38,7 +38,7 @@ class MarketDataService:
         """
         series_dict: dict[Timeframe, TimeframeSeries] = {}
 
-        # Per abilitare il fallback di aggregazione definito in align_timeframes, 
+        # Per abilitare il fallback di aggregazione definito in align_timeframes,
         # assicuriamoci di recuperare sempre M5 se servono timeframe superiori.
         fetch_timeframes = set(timeframes)
         if Timeframe.M15 in fetch_timeframes or Timeframe.H1 in fetch_timeframes:
@@ -46,10 +46,12 @@ class MarketDataService:
 
         # Recupero parallelo
         tasks = [
-            self._fetch_single_timeframe(pair, tf, as_of, lookback_bars, fetch_timeframes)
+            self._fetch_single_timeframe(
+                pair, tf, as_of, lookback_bars, fetch_timeframes
+            )
             for tf in fetch_timeframes
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for tf, result in zip(fetch_timeframes, results):
@@ -69,7 +71,12 @@ class MarketDataService:
         return align_timeframes(raw_snapshot, timeframes)
 
     async def _fetch_single_timeframe(
-        self, pair: str, tf: Timeframe, as_of: datetime, lookback: int, all_requested: set[Timeframe]
+        self,
+        pair: str,
+        tf: Timeframe,
+        as_of: datetime,
+        lookback: int,
+        all_requested: set[Timeframe],
     ) -> TimeframeSeries:
         """Recupera la singola serie applicando la logica di fallback se necessario."""
         start_time = self._calculate_start_time(as_of, tf, lookback, all_requested)
@@ -78,7 +85,9 @@ class MarketDataService:
             return await self.primary.fetch_series(pair, tf, start_time, as_of)
         except DataError as primary_error:
             if self.fallback is None:
-                logger.error(f"Errore adapter primario su {tf.value} e nessun fallback configurato.")
+                logger.error(
+                    f"Errore adapter primario su {tf.value} e nessun fallback configurato."
+                )
                 raise
 
             logger.warning(
@@ -87,7 +96,11 @@ class MarketDataService:
             return await self.fallback.fetch_series(pair, tf, start_time, as_of)
 
     def _calculate_start_time(
-        self, as_of: datetime, tf: Timeframe, lookback: int, all_requested: set[Timeframe]
+        self,
+        as_of: datetime,
+        tf: Timeframe,
+        lookback: int,
+        all_requested: set[Timeframe],
     ) -> datetime:
         """Calcola uno start_time sicuro aggiungendo buffer e allineando i lookback per l'aggregazione."""
         minutes_map = {
@@ -95,16 +108,16 @@ class MarketDataService:
             Timeframe.M15: 15,
             Timeframe.H1: 60,
         }
-        
-        # Se stiamo scaricando M5 ma abbiamo richiesto timeframe più ampi, 
-        # calcoliamo i minuti basandoci sul timeframe massimo richiesto 
+
+        # Se stiamo scaricando M5 ma abbiamo richiesto timeframe più ampi,
+        # calcoliamo i minuti basandoci sul timeframe massimo richiesto
         # in modo da avere abbastanza candele M5 per aggregarle.
         if tf == Timeframe.M5:
             max_requested_tf = max(all_requested, key=lambda t: minutes_map[t])
             base_minutes = minutes_map[max_requested_tf]
         else:
             base_minutes = minutes_map[tf]
-        
+
         # Moltiplicatore 2.0 per buchi fisiologici (es. weekend)
         total_minutes = int(base_minutes * lookback * 2.0)
         return as_of - timedelta(minutes=total_minutes)
