@@ -13,6 +13,10 @@ from core.schemas import (
     StrategyId,
     Timeframe,
 )
+from quantitative.exceptions import (
+    InsufficientDataError,
+    QuantitativeEngineUnavailableError,
+)
 from quantitative.ports import QuantitativeEvaluator
 
 
@@ -37,6 +41,16 @@ class FakeEvaluator(QuantitativeEvaluator):
             strategy_version="1.0.0",
             engine_version="1.1.5",
         )
+
+
+class InsufficientDataEvaluator:
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
+        raise InsufficientDataError("Servono più barre storiche.")
+
+
+class UnavailableEvaluator:
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
+        raise QuantitativeEngineUnavailableError("Motore non disponibile.")
 
 
 def _sample_payload() -> dict:
@@ -95,12 +109,64 @@ def test_post_evaluation_success() -> None:
     assert "engine_version" in body
 
 
+def test_invalid_request_returns_documented_error() -> None:
+    payload = _sample_payload()
+    del payload["configuration"]["strategy_id"]
+
+    response = TestClient(create_app(evaluator=FakeEvaluator())).post(
+        "/api/v1/evaluations", json=payload
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "invalid_request"
+    assert body["details"]["errors"]
+
+
+def test_insufficient_data_returns_documented_error() -> None:
+    response = TestClient(create_app(evaluator=InsufficientDataEvaluator())).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "insufficient_data"
+
+
+def test_unavailable_engine_returns_documented_error() -> None:
+    response = TestClient(create_app(evaluator=UnavailableEvaluator())).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "quantitative_unavailable"
+
+
+def test_missing_evaluator_returns_documented_unavailable_error() -> None:
+    response = TestClient(create_app()).post(
+        "/api/v1/evaluations", json=_sample_payload()
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "quantitative_unavailable"
+
+
 def test_openapi_reflects_new_market_data_snapshot_contract() -> None:
     app = create_app(evaluator=FakeEvaluator())
     client = TestClient(app)
 
     openapi_schema = client.get("/openapi.json").json()
     components = openapi_schema["components"]["schemas"]
+
+    assert openapi_schema["info"]["version"] == "1.0.0"
+    assert "does not place orders" in openapi_schema["info"]["description"]
+    operation = openapi_schema["paths"]["/api/v1/evaluations"]["post"]
+    assert operation["requestBody"]["required"] is True
+    responses = operation["responses"]
+    assert "200" in responses
+    assert "422" in responses
+    assert "503" in responses
+    assert "ErrorResponse" in str(responses["422"])
+    assert "ErrorResponse" in str(responses["503"])
 
     # Verifica che EvaluationRequest contenga esattamente market_data e configuration
     req_props = components["EvaluationRequest"]["properties"]
