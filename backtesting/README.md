@@ -62,3 +62,41 @@ interval, strategy ID/version, quantitative engine version, backtest version,
 configuration, costs, trades, equity curve, metrics, skipped decisions,
 temporal gaps, and any unfilled final target. IDs are derived from canonical
 JSON of the input and code versions, not wall-clock time or random values.
+
+## Walk-forward evaluation
+
+`WalkForwardRunner` accepts one canonical dataset, a fixed list of candidate
+strategy configurations, and an explicit ordered list of folds. Each fold has
+closed UTC windows for training, validation, and out-of-sample test. The
+training-to-validation gap must be at least the configured `purge_minutes`; the
+validation-to-test gap must be at least `embargo_minutes`. Window endpoints
+are inclusive, so windows cannot overlap. Test windows across folds must also
+be ordered and non-overlapping.
+
+For every candidate, the report includes separate training and validation
+backtests. Training results are diagnostic; selection uses only the explicitly
+configured validation metric and direction. Candidates with no validation
+result or an undefined metric are ineligible. Exact score ties are resolved by
+ascending `candidate_id`, independent of input list order. Only after selection
+does the runner invoke the backtester for that candidate's test window. Test
+metrics never enter that fold's selection.
+
+Each period sees only bars at or before its end, and the reused backtester
+further limits every decision to closed bars available at that decision time.
+Earlier bars remain available for indicator warm-up. Each period starts from
+the same explicit initial capital and flat account state; positions are not
+carried between periods. Commission, slippage, risk settings, and account
+currency conversion use the same inputs as ordinary backtests.
+
+Period status is one of `completed`, `no_trades`, `no_data`,
+`insufficient_history`, `invalid_data`, or `not_run`. A fold with no eligible
+validation score has no selected candidate and its test is `not_run`. Temporal
+gaps remain visible through the reused backtest metrics; missing candles are
+not synthesized.
+
+The aggregate reports the sum of out-of-sample net PnL, arithmetic mean of
+per-fold percentage returns (equal fold weighting), worst per-fold percentage
+drawdown, and pooled profit factor and expectancy. Profit factor is `null`
+when the evaluated test trades contain no losses; expectancy is `null` when
+there are no test trades. Dataset, fold, strategy, engine, backtest, and
+walk-forward versions are fingerprinted or included in the report.
