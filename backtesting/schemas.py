@@ -8,11 +8,14 @@ from pydantic import Field, field_validator, model_validator
 
 from core.schemas import (
     MarketDataSnapshot,
+    PortfolioAccountState,
+    PortfolioPositionState,
     RiskAccountState,
     RiskConfiguration,
     SignalDirection,
     StrategyConfiguration,
     StrictBaseModel,
+    Timeframe,
     validate_utc_datetime,
 )
 
@@ -59,6 +62,12 @@ class BacktestTrade(StrictBaseModel):
     exit_timestamp: datetime
     entry_market_price: float = Field(..., gt=0.0, allow_inf_nan=False)
     exit_market_price: float = Field(..., gt=0.0, allow_inf_nan=False)
+    entry_conversion_rate: float | None = Field(
+        default=None, gt=0.0, allow_inf_nan=False
+    )
+    exit_conversion_rate: float | None = Field(
+        default=None, gt=0.0, allow_inf_nan=False
+    )
     gross_pnl: float = Field(..., allow_inf_nan=False)
     commission: float = Field(..., ge=0.0, allow_inf_nan=False)
     slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
@@ -134,6 +143,235 @@ class BacktestResult(StrictBaseModel):
     equity_curve: list[BacktestEquityPoint] = Field(default_factory=list)
     trades: list[BacktestTrade] = Field(default_factory=list)
     unfilled_final_signal: bool = False
+
+    @field_validator("start", "end")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
+class AccountCurrencyRate(StrictBaseModel):
+    """Rate converting one unit of source currency into account currency."""
+
+    timestamp: datetime
+    source_currency: str = Field(..., pattern=r"^[A-Z]{3}$")
+    account_currency: str = Field(..., pattern=r"^[A-Z]{3}$")
+    rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+
+    @field_validator("timestamp")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
+class PortfolioInstrument(StrictBaseModel):
+    instrument_id: str = Field(..., min_length=1)
+    price_currency: str = Field(..., pattern=r"^[A-Z]{3}$")
+    market_data: MarketDataSnapshot
+    configuration: StrategyConfiguration
+    costs: BacktestCostModel
+    conversion_rates: list[AccountCurrencyRate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def check_rates(self) -> "PortfolioInstrument":
+        if self.market_data.pair != self.instrument_id:
+            raise ValueError("instrument_id must match market_data.pair.")
+        for timeframe, series in self.market_data.series.items():
+            previous_bar_timestamp = None
+            for bar in series.bars:
+                if (
+                    previous_bar_timestamp is not None
+                    and bar.timestamp <= previous_bar_timestamp
+                ):
+                    raise ValueError(
+                        f"Bars for {self.instrument_id} {timeframe.value} must be unique and ordered."
+                    )
+                interval = {
+                    Timeframe.M5: 5,
+                    Timeframe.M15: 15,
+                    Timeframe.H1: 60,
+                }[timeframe]
+                if (
+                    bar.timestamp.second
+                    or bar.timestamp.microsecond
+                    or bar.timestamp.minute % interval
+                ):
+                    raise ValueError(
+                        f"Bar timestamps for {self.instrument_id} {timeframe.value} must align to UTC boundaries."
+                    )
+                previous_bar_timestamp = bar.timestamp
+        previous_timestamp = None
+        for conversion in self.conversion_rates:
+            if conversion.source_currency != self.price_currency:
+                raise ValueError(
+                    "Conversion source_currency must match price_currency."
+                )
+            if conversion.timestamp > self.market_data.as_of:
+                raise ValueError(
+                    "Conversion rates cannot be later than market_data.as_of."
+                )
+            if (
+                previous_timestamp is not None
+                and conversion.timestamp <= previous_timestamp
+            ):
+                raise ValueError(
+                    "Conversion rates must be unique and strictly ordered."
+                )
+            previous_timestamp = conversion.timestamp
+        return self
+
+
+class PortfolioBacktestRequest(StrictBaseModel):
+    instruments: list[PortfolioInstrument] = Field(..., min_length=1)
+    account_currency: str = Field(..., pattern=r"^[A-Z]{3}$")
+    risk_configuration: RiskConfiguration
+    account_state: PortfolioAccountState
+    start: datetime
+    end: datetime
+    initial_capital: float = Field(..., gt=0.0, allow_inf_nan=False)
+
+    @field_validator("start", "end")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+    @model_validator(mode="after")
+    def check_portfolio_request(self) -> "PortfolioBacktestRequest":
+        if self.start >= self.end:
+            raise ValueError("Portfolio backtest start must be earlier than end.")
+        if self.account_state.account_currency != self.account_currency:
+            raise ValueError("Account state currency must match account_currency.")
+        if self.account_state.equity != self.initial_capital:
+            raise ValueError("account_state.equity must equal initial_capital.")
+        if self.account_state.positions or self.account_state.gross_exposure != 0.0:
+            raise ValueError(
+                "Portfolio replay currently requires a flat initial account."
+            )
+        instrument_ids = [item.instrument_id for item in self.instruments]
+        if len(instrument_ids) != len(set(instrument_ids)):
+            raise ValueError("instrument_id values must be unique.")
+        strategy_ids = {item.configuration.strategy_id for item in self.instruments}
+        if len(strategy_ids) != 1:
+            raise ValueError("All portfolio instruments must use the same strategy_id.")
+        for item in self.instruments:
+            if item.market_data.as_of < self.end:
+                raise ValueError(
+                    "Each instrument dataset must cover the portfolio end."
+                )
+            if any(
+                rate.account_currency != self.account_currency
+                or rate.source_currency != item.price_currency
+                for rate in item.conversion_rates
+            ):
+                raise ValueError(
+                    "Conversion currency pair must match instrument price and account currencies."
+                )
+        return self
+
+
+class PortfolioTrade(StrictBaseModel):
+    instrument_id: str
+    side: SignalDirection
+    quantity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    entry_timestamp: datetime
+    exit_timestamp: datetime
+    entry_market_price: float = Field(..., gt=0.0, allow_inf_nan=False)
+    exit_market_price: float = Field(..., gt=0.0, allow_inf_nan=False)
+    entry_conversion_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+    exit_conversion_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+    gross_pnl: float = Field(..., allow_inf_nan=False)
+    commission: float = Field(..., ge=0.0, allow_inf_nan=False)
+    slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
+    net_pnl: float = Field(..., allow_inf_nan=False)
+    entry_reasons: list[str] = Field(default_factory=list)
+    exit_reasons: list[str] = Field(default_factory=list)
+
+    @field_validator("entry_timestamp", "exit_timestamp")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
+class PortfolioInstrumentStatus(str, Enum):
+    COMPLETED = "completed"
+    NO_TRADES = "no_trades"
+    NO_DATA = "no_data"
+
+
+class PortfolioEquityPoint(StrictBaseModel):
+    timestamp: datetime
+    equity: float = Field(..., allow_inf_nan=False)
+    realized_pnl: float = Field(..., allow_inf_nan=False)
+    unrealized_pnl: float = Field(..., allow_inf_nan=False)
+    cumulative_commission: float = Field(..., ge=0.0, allow_inf_nan=False)
+    cumulative_slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    positions: dict[str, PortfolioPositionState] = Field(default_factory=dict)
+
+    @field_validator("timestamp")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
+class InstrumentEquityPoint(StrictBaseModel):
+    timestamp: datetime
+    net_pnl: float = Field(..., allow_inf_nan=False)
+    unrealized_pnl: float = Field(..., allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    position_direction: SignalDirection
+    position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+
+    @field_validator("timestamp")
+    @classmethod
+    def check_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+
+class InstrumentBacktestMetrics(StrictBaseModel):
+    trade_count: int = Field(..., ge=0)
+    winning_trades: int = Field(..., ge=0)
+    losing_trades: int = Field(..., ge=0)
+    gross_pnl: float = Field(..., allow_inf_nan=False)
+    net_pnl: float = Field(..., allow_inf_nan=False)
+    total_commission: float = Field(..., ge=0.0, allow_inf_nan=False)
+    total_slippage_cost: float = Field(..., ge=0.0, allow_inf_nan=False)
+    temporal_gaps: int = Field(..., ge=0)
+    skipped_decisions: int = Field(..., ge=0)
+
+
+class PortfolioInstrumentResult(StrictBaseModel):
+    instrument_id: str
+    status: PortfolioInstrumentStatus
+    configuration: StrategyConfiguration
+    costs: BacktestCostModel
+    conversion_rates: list[AccountCurrencyRate] = Field(default_factory=list)
+    metrics: InstrumentBacktestMetrics
+    trades: list[PortfolioTrade] = Field(default_factory=list)
+    equity_curve: list[InstrumentEquityPoint] = Field(default_factory=list)
+    skipped_reasons: dict[str, int] = Field(default_factory=dict)
+    unfilled_final_signal: bool = False
+
+
+class PortfolioBacktestResult(StrictBaseModel):
+    run_id: str
+    input_fingerprint: str
+    portfolio_backtest_version: str
+    strategy_id: str
+    strategy_version: str
+    engine_version: str
+    account_currency: str
+    start: datetime
+    end: datetime
+    initial_capital: float = Field(..., gt=0.0, allow_inf_nan=False)
+    final_equity: float = Field(..., allow_inf_nan=False)
+    initial_account_state: PortfolioAccountState
+    risk_configuration: RiskConfiguration
+    configurations: dict[str, StrategyConfiguration]
+    costs: dict[str, BacktestCostModel]
+    metrics: BacktestMetrics
+    equity_curve: list[PortfolioEquityPoint] = Field(default_factory=list)
+    instruments: dict[str, PortfolioInstrumentResult]
 
     @field_validator("start", "end")
     @classmethod

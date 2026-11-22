@@ -214,7 +214,7 @@ async def test_backtest_runs_chronologically_and_creates_trade():
     assert result.input_fingerprint
     assert result.strategy_version == strategy.version
     assert result.engine_version
-    assert result.backtest_version == "1.1.0"
+    assert result.backtest_version == "1.2.0"
     assert len(result.equity_curve) == 6
     assert result.equity_curve[-1].equity == result.final_equity
     assert result.metrics.profit_factor is None

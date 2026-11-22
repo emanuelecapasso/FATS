@@ -22,12 +22,17 @@ no operating defaults:
 
 `RiskAccountState` expresses equity, daily starting equity, peak equity, gross
 exposure, and the current position in account-currency money and instrument
-units. `price_to_account_currency_rate` explicitly converts one unit of the
+units. Portfolio evaluations also provide `instrument_id` and a timestamped
+`portfolio_positions` map so every open holding and its account-currency mark
+are explicit. `reserved_exposure_delta` is the deterministic allocation
+reservation for earlier instrument IDs evaluated at the same event; it may be
+negative when an earlier target closes a position. `price_to_account_currency_rate` explicitly converts one unit of the
 market price's quote currency into account currency; it is used for both risk
 per unit and notional exposure (set to `1` when the currencies match). A
 directional position must have positive quantity; flat must have zero.
 For a new/reversed position, the current instrument's notional is removed from
-gross exposure before calculating remaining aggregate capacity.
+projected gross exposure (current exposure plus reservation delta) before
+calculating remaining aggregate capacity.
 
 ## Sizing and boundaries
 

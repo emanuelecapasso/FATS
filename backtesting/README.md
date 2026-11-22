@@ -100,3 +100,44 @@ drawdown, and pooled profit factor and expectancy. Profit factor is `null`
 when the evaluated test trades contain no losses; expectancy is `null` when
 there are no test trades. Dataset, fold, strategy, engine, backtest, and
 walk-forward versions are fingerprinted or included in the report.
+
+## Multi-instrument portfolio replay
+
+`PortfolioBacktestRunner` replays one strategy across canonical instrument
+datasets with per-instrument configuration and costs, one shared flat initial
+account, one risk configuration, and one account currency. Each instrument's
+quote currency is explicit. `AccountCurrencyRate` entries convert one unit of
+that quote currency into the account currency; even same-currency conversion
+must be supplied explicitly. Rates are UTC ordered input data, never fetched
+from a provider during replay.
+
+The event calendar is the sorted union of closed M5 timestamps and conversion
+rate timestamps inside the requested interval. Open positions are marked at
+each event with the latest closed M5 price and latest conversion rate at or
+before that timestamp. A price or conversion older than
+`RiskConfiguration.max_price_age_seconds` rejects valuation of an open
+portfolio. For an instrument with no open position, a decision with missing or
+stale conversion is skipped and counted; a pending new entry whose fill-time
+conversion is unavailable is canceled. Missing or stale conversion required
+to close or mark an open position rejects the run instead of fabricating PnL.
+
+At a shared timestamp, all per-instrument strategy signals are computed before
+risk allocation changes. Risk sizing then visits instruments in ascending
+`instrument_id`, reserving projected exposure from earlier allocations. The
+aggregate exposure cap is checked again at the next M5 open using the actual
+fill price and account-currency rate. Fill transitions at one timestamp use
+the same stable instrument order. Input bars and FX rates must be unique and
+ordered; bars must align to their UTC M5/M15/H1 boundaries. Only closed bars at
+or before each decision are visible. Temporal gaps skip that instrument's
+decision and are reported; no bars are synthesized.
+
+Equity, realized and unrealized PnL, costs, exposure, and positions are stored
+in the account currency on the shared portfolio curve and in per-instrument
+curves. Costs are applied using each instrument's configured commission and
+slippage. The initial account must be flat; positions are liquidated at the
+last available in-range mark. Results include instrument-level trades and
+metrics, aggregate metrics, configurations, costs, risk limits, dataset
+fingerprint, and strategy, engine, and portfolio-runner versions. Both the
+instrument order and event order are canonicalized, so input list ordering
+does not change allocations or run IDs. This flow is offline and never sends
+orders.

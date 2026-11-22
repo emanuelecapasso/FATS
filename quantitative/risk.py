@@ -51,6 +51,11 @@ class DeterministicRiskEvaluator:
             return deny("risk:price_stale")
 
         account = account_state
+        if any(
+            position.valued_at > snapshot.as_of
+            for position in account.portfolio_positions.values()
+        ):
+            return deny("risk:portfolio_position_from_future")
         if configuration.current_position != account.position_direction:
             return deny("risk:position_state_mismatch")
         price = latest.close
@@ -85,9 +90,8 @@ class DeterministicRiskEvaluator:
         risk_budget = account.equity * risk_configuration.max_risk_per_position_pct
         per_unit_risk = unit_notional * risk_configuration.stop_distance_pct
         max_by_risk = risk_budget / per_unit_risk
-        exposure_without_this_position = max(
-            0.0, account.gross_exposure - current_notional
-        )
+        target_exposure = account.gross_exposure + account.reserved_exposure_delta
+        exposure_without_this_position = max(0.0, target_exposure - current_notional)
         exposure_budget = account.equity * risk_configuration.max_aggregate_exposure_pct
         remaining_exposure = max(0.0, exposure_budget - exposure_without_this_position)
         max_by_exposure = remaining_exposure / unit_notional
@@ -96,7 +100,7 @@ class DeterministicRiskEvaluator:
             quantity = account.position_quantity
             if quantity * per_unit_risk > risk_budget:
                 return deny("risk:position_risk_limit")
-            if account.gross_exposure > exposure_budget:
+            if target_exposure > exposure_budget:
                 return deny("risk:aggregate_exposure_limit")
             return RiskDecision(
                 approved=True,

@@ -1,13 +1,24 @@
 """Offline historical replay and simulation."""
 
+from backtesting.portfolio import PortfolioBacktestRunner
 from backtesting.runner import BacktestRunner
 from backtesting.schemas import (
+    AccountCurrencyRate,
     BacktestCostModel,
     BacktestEquityPoint,
     BacktestMetrics,
     BacktestRequest,
     BacktestResult,
     BacktestTrade,
+    InstrumentBacktestMetrics,
+    InstrumentEquityPoint,
+    PortfolioBacktestRequest,
+    PortfolioBacktestResult,
+    PortfolioEquityPoint,
+    PortfolioInstrument,
+    PortfolioInstrumentResult,
+    PortfolioInstrumentStatus,
+    PortfolioTrade,
     WalkForwardCandidate,
     WalkForwardFoldPlan,
     WalkForwardPeriodStatus,
@@ -19,6 +30,7 @@ from backtesting.schemas import (
 from backtesting.walk_forward import WalkForwardRunner
 
 __all__ = [
+    "AccountCurrencyRate",
     "BacktestCostModel",
     "BacktestEquityPoint",
     "BacktestMetrics",
@@ -26,6 +38,16 @@ __all__ = [
     "BacktestResult",
     "BacktestRunner",
     "BacktestTrade",
+    "InstrumentBacktestMetrics",
+    "InstrumentEquityPoint",
+    "PortfolioBacktestRequest",
+    "PortfolioBacktestResult",
+    "PortfolioBacktestRunner",
+    "PortfolioEquityPoint",
+    "PortfolioInstrument",
+    "PortfolioInstrumentResult",
+    "PortfolioInstrumentStatus",
+    "PortfolioTrade",
     "WalkForwardCandidate",
     "WalkForwardFoldPlan",
     "WalkForwardPeriodStatus",

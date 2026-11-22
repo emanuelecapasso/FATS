@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.4"
+CURRENT_SCHEMA_VERSION = "1.5"
 
 
 # --- ENUMS ---
@@ -202,6 +202,61 @@ class RiskConfiguration(StrictBaseModel):
     quantity_step: float = Field(..., gt=0.0, allow_inf_nan=False)
 
 
+class PortfolioPositionState(StrictBaseModel):
+    """One open holding valued in account currency at a UTC event time."""
+
+    instrument_id: str = Field(..., min_length=1)
+    direction: SignalDirection
+    quantity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    mark_price: float = Field(..., gt=0.0, allow_inf_nan=False)
+    price_to_account_currency_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., gt=0.0, allow_inf_nan=False)
+    unrealized_pnl: float = Field(..., allow_inf_nan=False)
+    valued_at: datetime
+
+    @field_validator("valued_at")
+    @classmethod
+    def check_valued_at_utc(cls, value: datetime) -> datetime:
+        return validate_utc_datetime(value)
+
+    @model_validator(mode="after")
+    def check_direction(self) -> "PortfolioPositionState":
+        if self.direction == SignalDirection.FLAT:
+            raise ValueError("A portfolio position must be directional.")
+        return self
+
+
+class PortfolioAccountState(StrictBaseModel):
+    """Shared account state; all monetary values use account currency."""
+
+    account_currency: str = Field(..., pattern=r"^[A-Z]{3}$")
+    equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    daily_start_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    peak_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    positions: dict[str, PortfolioPositionState] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_portfolio(self) -> "PortfolioAccountState":
+        if self.peak_equity < self.equity or self.peak_equity < self.daily_start_equity:
+            raise ValueError(
+                "peak_equity cannot be lower than account equity or daily start."
+            )
+        for instrument_id, position in self.positions.items():
+            if instrument_id != position.instrument_id:
+                raise ValueError("Portfolio position key must match instrument_id.")
+        expected_exposure = sum(
+            position.gross_exposure for position in self.positions.values()
+        )
+        if abs(expected_exposure - self.gross_exposure) > max(
+            1e-8, abs(expected_exposure) * 1e-9
+        ):
+            raise ValueError(
+                "gross_exposure must equal the sum of open position exposure."
+            )
+        return self
+
+
 class RiskAccountState(StrictBaseModel):
     """Account values at a decision point; money and exposure use account currency."""
 
@@ -209,9 +264,12 @@ class RiskAccountState(StrictBaseModel):
     daily_start_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
     peak_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
     gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    reserved_exposure_delta: float = Field(default=0.0, allow_inf_nan=False)
     price_to_account_currency_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
     position_direction: SignalDirection
     position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+    instrument_id: str | None = Field(default=None, min_length=1)
+    portfolio_positions: dict[str, PortfolioPositionState] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_position(self) -> "RiskAccountState":
@@ -225,6 +283,31 @@ class RiskAccountState(StrictBaseModel):
             raise ValueError("peak_equity cannot be lower than equity.")
         if self.peak_equity < self.daily_start_equity:
             raise ValueError("peak_equity cannot be lower than daily_start_equity.")
+        for instrument_id, position in self.portfolio_positions.items():
+            if instrument_id != position.instrument_id:
+                raise ValueError("Portfolio position key must match instrument_id.")
+        positions_exposure = sum(
+            position.gross_exposure for position in self.portfolio_positions.values()
+        )
+        if (
+            self.portfolio_positions
+            and self.gross_exposure + max(1e-8, abs(positions_exposure) * 1e-9)
+            < positions_exposure
+        ):
+            raise ValueError(
+                "gross_exposure cannot be below portfolio position exposure."
+            )
+        if self.instrument_id is not None:
+            current = self.portfolio_positions.get(self.instrument_id)
+            if current is None and self.position_direction != SignalDirection.FLAT:
+                raise ValueError("Current position must exist in portfolio_positions.")
+            if current is not None and (
+                current.direction != self.position_direction
+                or current.quantity != self.position_quantity
+            ):
+                raise ValueError(
+                    "Current position fields must match portfolio_positions."
+                )
         return self
 
 

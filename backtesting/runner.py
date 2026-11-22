@@ -27,7 +27,7 @@ from quantitative.ports import RiskEvaluator, Strategy
 
 REQUIRED_TIMEFRAMES = (Timeframe.M5, Timeframe.M15, Timeframe.H1)
 M5_DURATION = timedelta(minutes=5)
-BACKTEST_VERSION = "1.1.0"
+BACKTEST_VERSION = "1.2.0"
 
 
 @dataclass(frozen=True)
@@ -139,6 +139,8 @@ class BacktestRunner:
                     exit_timestamp=timestamp,
                     entry_market_price=open_position.market_entry_price,
                     exit_market_price=market_price,
+                    entry_conversion_rate=conversion,
+                    exit_conversion_rate=conversion,
                     gross_pnl=gross_pnl,
                     commission=total_commission,
                     slippage_cost=total_slippage,
