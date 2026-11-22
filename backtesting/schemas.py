@@ -7,6 +7,8 @@ from pydantic import Field, field_validator, model_validator
 
 from core.schemas import (
     MarketDataSnapshot,
+    RiskAccountState,
+    RiskConfiguration,
     SignalDirection,
     StrategyConfiguration,
     StrictBaseModel,
@@ -22,6 +24,8 @@ class BacktestCostModel(StrictBaseModel):
 class BacktestRequest(StrictBaseModel):
     market_data: MarketDataSnapshot
     configuration: StrategyConfiguration
+    risk_configuration: RiskConfiguration
+    account_state: RiskAccountState
     start: datetime
     end: datetime
     initial_capital: float = Field(default=10_000.0, gt=0.0, allow_inf_nan=False)
@@ -38,6 +42,12 @@ class BacktestRequest(StrictBaseModel):
             raise ValueError("Backtest start must be earlier than end.")
         if self.end > self.market_data.as_of:
             raise ValueError("Backtest end cannot be later than market_data.as_of.")
+        if self.account_state.equity != self.initial_capital:
+            raise ValueError(
+                "account_state.equity must equal initial_capital at the start of a run."
+            )
+        if self.account_state.position_direction != SignalDirection.FLAT:
+            raise ValueError("Backtest currently requires a flat initial position.")
         return self
 
 
@@ -86,6 +96,8 @@ class BacktestResult(StrictBaseModel):
     strategy_version: str
     engine_version: str
     configuration: StrategyConfiguration
+    risk_configuration: RiskConfiguration
+    initial_account_state: RiskAccountState
     costs: BacktestCostModel
     initial_capital: float = Field(..., gt=0.0, allow_inf_nan=False)
     final_equity: float = Field(..., allow_inf_nan=False)

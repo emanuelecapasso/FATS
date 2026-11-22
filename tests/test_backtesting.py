@@ -10,6 +10,8 @@ from core.schemas import (
     DataSourceKind,
     MarketBar,
     MarketDataSnapshot,
+    RiskAccountState,
+    RiskConfiguration,
     RiskDecision,
     Signal,
     SignalDirection,
@@ -19,6 +21,7 @@ from core.schemas import (
     TimeframeSeries,
     VolumeType,
 )
+from quantitative.risk import DeterministicRiskEvaluator
 
 BASE_TIME = datetime(2026, 11, 22, 10, 0, tzinfo=UTC)
 
@@ -86,7 +89,9 @@ class NoTradeStrategy(ScriptedStrategy):
 
 
 class AllowRisk:
-    def evaluate(self, signal, configuration):
+    def evaluate(
+        self, signal, snapshot, configuration, risk_configuration, account_state
+    ):
         return RiskDecision(approved=True, reasons=[], recommended_quantity=1.0)
 
 
@@ -150,6 +155,24 @@ def _request(
     return BacktestRequest(
         market_data=snapshot,
         configuration=StrategyConfiguration(strategy_id=StrategyId.TREND_FOLLOWING),
+        risk_configuration=RiskConfiguration(
+            max_risk_per_position_pct=0.01,
+            max_aggregate_exposure_pct=10.0,
+            max_daily_loss_pct=0.05,
+            max_drawdown_pct=0.10,
+            stop_distance_pct=0.01,
+            max_price_age_seconds=3600,
+            quantity_step=0.01,
+        ),
+        account_state=RiskAccountState(
+            equity=10_000.0,
+            daily_start_equity=10_000.0,
+            peak_equity=10_000.0,
+            gross_exposure=0.0,
+            price_to_account_currency_rate=1.0,
+            position_direction=SignalDirection.FLAT,
+            position_quantity=0.0,
+        ),
         start=timestamps[0],
         end=timestamps[-1],
         initial_capital=10_000.0,
@@ -175,6 +198,19 @@ async def test_backtest_runs_chronologically_and_creates_trade():
     assert result.engine_version
     assert [item[0] for item in strategy.observed_timestamps] == sorted(
         item[0] for item in strategy.observed_timestamps
+    )
+
+
+@pytest.mark.asyncio
+async def test_backtest_uses_the_shared_deterministic_risk_evaluator():
+    result = await BacktestRunner(ScriptedStrategy(), DeterministicRiskEvaluator()).run(
+        _request()
+    )
+
+    assert result.metrics.trade_count == 1
+    trade = result.trades[0]
+    assert trade.quantity * 100.5 * result.risk_configuration.stop_distance_pct <= (
+        result.initial_capital * result.risk_configuration.max_risk_per_position_pct
     )
 
 
@@ -256,6 +292,8 @@ def test_request_rejects_end_after_market_data_as_of():
         BacktestRequest(
             market_data=request.market_data,
             configuration=request.configuration,
+            risk_configuration=request.risk_configuration,
+            account_state=request.account_state,
             start=request.start,
             end=request.end + timedelta(minutes=5),
             initial_capital=request.initial_capital,

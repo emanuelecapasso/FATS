@@ -92,7 +92,13 @@ class QuantitativeEngine:
             raise TypeError("Strategy must return a canonical Signal.")
 
         # 3. Valutazione del Rischio
-        risk_decision = self.risk_evaluator.evaluate(signal, configuration)
+        risk_decision = self.risk_evaluator.evaluate(
+            signal,
+            canonical_snapshot,
+            configuration,
+            request.risk_configuration,
+            request.account_state,
+        )
 
         if not isinstance(risk_decision, RiskDecision):
             raise TypeError("Risk Evaluator must return a canonical RiskDecision.")

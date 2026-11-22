@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.3"
+CURRENT_SCHEMA_VERSION = "1.4"
 
 
 # --- ENUMS ---
@@ -190,6 +190,44 @@ class StrategyConfiguration(StrictBaseModel):
     )
 
 
+class RiskConfiguration(StrictBaseModel):
+    """Risk ratios are fractions (0.01 = 1%); quantity_step is instrument units."""
+
+    max_risk_per_position_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_aggregate_exposure_pct: float = Field(..., gt=0.0, allow_inf_nan=False)
+    max_daily_loss_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_drawdown_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    stop_distance_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_price_age_seconds: int = Field(..., gt=0)
+    quantity_step: float = Field(..., gt=0.0, allow_inf_nan=False)
+
+
+class RiskAccountState(StrictBaseModel):
+    """Account values at a decision point; money and exposure use account currency."""
+
+    equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    daily_start_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    peak_equity: float = Field(..., gt=0.0, allow_inf_nan=False)
+    gross_exposure: float = Field(..., ge=0.0, allow_inf_nan=False)
+    price_to_account_currency_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
+    position_direction: SignalDirection
+    position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_position(self) -> "RiskAccountState":
+        if (self.position_direction == SignalDirection.FLAT) != (
+            self.position_quantity == 0
+        ):
+            raise ValueError(
+                "FLAT requires zero quantity and directional positions require positive quantity."
+            )
+        if self.peak_equity < self.equity:
+            raise ValueError("peak_equity cannot be lower than equity.")
+        if self.peak_equity < self.daily_start_equity:
+            raise ValueError("peak_equity cannot be lower than daily_start_equity.")
+        return self
+
+
 class EvaluationRequest(StrictBaseModel):
     schema_version: str = Field(
         default=CURRENT_SCHEMA_VERSION,
@@ -198,6 +236,8 @@ class EvaluationRequest(StrictBaseModel):
     )
     market_data: MarketDataSnapshot
     configuration: StrategyConfiguration
+    risk_configuration: RiskConfiguration | None = None
+    account_state: RiskAccountState | None = None
 
 
 class Signal(StrictBaseModel):

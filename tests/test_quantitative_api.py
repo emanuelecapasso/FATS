@@ -106,6 +106,8 @@ def test_openapi_reflects_new_market_data_snapshot_contract() -> None:
     req_props = components["EvaluationRequest"]["properties"]
     assert "market_data" in req_props
     assert "configuration" in req_props
+    assert "risk_configuration" in req_props
+    assert "account_state" in req_props
     assert "pair" not in req_props  # Vecchio campo piatto rimosso
 
     # Verifica che MarketDataSnapshot sia referenziato correttamente

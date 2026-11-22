@@ -43,7 +43,9 @@ class MockStrategy:
 
 
 class MockRiskEvaluator:
-    def evaluate(self, signal, configuration):
+    def evaluate(
+        self, signal, snapshot, configuration, risk_configuration, account_state
+    ):
         return RiskDecision(
             approved=True,
             reasons=["Test Passed"],
@@ -210,9 +212,7 @@ async def test_engine_is_deterministic_for_different_series_mapping_order(
 
 
 @pytest.mark.asyncio
-async def test_engine_rejects_out_of_order_bars(
-    engine, base_dt, provenance_mock
-):
+async def test_engine_rejects_out_of_order_bars(engine, base_dt, provenance_mock):
     request = create_eval_request(
         base_dt,
         provenance_mock,
@@ -229,9 +229,7 @@ async def test_engine_rejects_out_of_order_bars(
 
 
 @pytest.mark.asyncio
-async def test_engine_rejects_duplicate_bars(
-    engine, base_dt, provenance_mock
-):
+async def test_engine_rejects_duplicate_bars(engine, base_dt, provenance_mock):
     duplicate = make_bar("2026-11-22T11:00:00")
     request = create_eval_request(
         base_dt,
@@ -250,9 +248,7 @@ async def test_engine_rejects_duplicate_bars(
 
 
 @pytest.mark.asyncio
-async def test_engine_rejects_stale_data(
-    engine, base_dt, provenance_mock
-):
+async def test_engine_rejects_stale_data(engine, base_dt, provenance_mock):
     request = create_eval_request(
         base_dt,
         provenance_mock,
@@ -264,9 +260,7 @@ async def test_engine_rejects_stale_data(
 
 
 @pytest.mark.asyncio
-async def test_engine_rejects_unclosed_partial_bar(
-    engine, base_dt, provenance_mock
-):
+async def test_engine_rejects_unclosed_partial_bar(engine, base_dt, provenance_mock):
     request = create_eval_request(
         base_dt,
         provenance_mock,

@@ -15,6 +15,7 @@ from core.schemas import (
     DataQuality,
     EvaluationRequest,
     MarketDataSnapshot,
+    RiskAccountState,
     SignalDirection,
     Timeframe,
     TimeframeSeries,
@@ -101,6 +102,9 @@ class BacktestRunner:
         open_position: _OpenPosition | None = None
         pending_target: _PendingTarget | None = None
         last_in_range_bar = None
+        daily_start_equity = request.account_state.daily_start_equity
+        peak_equity = request.account_state.peak_equity
+        current_day = None
 
         def close_position(
             market_price: float, timestamp, exit_reasons: list[str]
@@ -111,13 +115,16 @@ class BacktestRunner:
             if market_price <= 0:
                 raise InvalidMarketDataError("Backtest fill prices must be positive.")
 
-            exit_commission = open_position.quantity * market_price * commission_rate
-            exit_slippage = open_position.quantity * market_price * slippage_rate
+            conversion = request.account_state.price_to_account_currency_rate
+            exit_notional = open_position.quantity * market_price * conversion
+            exit_commission = exit_notional * commission_rate
+            exit_slippage = exit_notional * slippage_rate
             side_sign = 1.0 if open_position.side == SignalDirection.LONG else -1.0
             gross_pnl = (
                 side_sign
                 * (market_price - open_position.market_entry_price)
                 * open_position.quantity
+                * conversion
             )
             total_commission = open_position.entry_commission + exit_commission
             total_slippage = open_position.entry_slippage + exit_slippage
@@ -162,8 +169,18 @@ class BacktestRunner:
                     entry_timestamp=fill_timestamp,
                     market_entry_price=market_price,
                     entry_reasons=list(target.reasons),
-                    entry_commission=quantity * market_price * commission_rate,
-                    entry_slippage=quantity * market_price * slippage_rate,
+                    entry_commission=(
+                        quantity
+                        * market_price
+                        * request.account_state.price_to_account_currency_rate
+                        * commission_rate
+                    ),
+                    entry_slippage=(
+                        quantity
+                        * market_price
+                        * request.account_state.price_to_account_currency_rate
+                        * slippage_rate
+                    ),
                 )
 
         for bar in closed_m5:
@@ -195,7 +212,32 @@ class BacktestRunner:
             evaluation_request = EvaluationRequest(
                 market_data=decision_snapshot,
                 configuration=configuration,
+                risk_configuration=request.risk_configuration,
+                account_state=self._account_at_decision(
+                    request,
+                    open_position,
+                    trades,
+                    bar.close,
+                    daily_start_equity,
+                    peak_equity,
+                ),
             )
+            account = evaluation_request.account_state
+            if account is not None and current_day != bar.timestamp.date():
+                current_day = bar.timestamp.date()
+                daily_start_equity = account.equity
+            if account is not None:
+                peak_equity = max(peak_equity, account.equity)
+                evaluation_request = evaluation_request.model_copy(
+                    update={
+                        "account_state": account.model_copy(
+                            update={
+                                "daily_start_equity": daily_start_equity,
+                                "peak_equity": peak_equity,
+                            }
+                        )
+                    }
+                )
             try:
                 response = await self.engine.evaluate(evaluation_request)
             except InsufficientHistoryError:
@@ -277,12 +319,57 @@ class BacktestRunner:
             strategy_version=self.strategy.version,
             engine_version=ENGINE_VERSION,
             configuration=request.configuration,
+            risk_configuration=request.risk_configuration,
+            initial_account_state=request.account_state,
             costs=costs,
             initial_capital=request.initial_capital,
             final_equity=request.initial_capital + net_pnl,
             metrics=metrics,
             trades=trades,
             unfilled_final_signal=unfilled_final_signal,
+        )
+
+    @staticmethod
+    def _account_at_decision(
+        request: BacktestRequest,
+        position: _OpenPosition | None,
+        trades: list[BacktestTrade],
+        price: float,
+        daily_start_equity: float,
+        peak_equity: float,
+    ) -> RiskAccountState | None:
+        realized = sum(trade.net_pnl for trade in trades)
+        unrealized = 0.0
+        exposure = request.account_state.gross_exposure
+        direction = SignalDirection.FLAT
+        quantity = 0.0
+        if position is not None:
+            sign = 1.0 if position.side == SignalDirection.LONG else -1.0
+            unrealized = (
+                sign
+                * (price - position.market_entry_price)
+                * position.quantity
+                * request.account_state.price_to_account_currency_rate
+            )
+            unrealized -= position.entry_commission + position.entry_slippage
+            exposure += (
+                price
+                * position.quantity
+                * request.account_state.price_to_account_currency_rate
+            )
+            direction = position.side
+            quantity = position.quantity
+        equity = request.initial_capital + realized + unrealized
+        if equity <= 0:
+            return None
+        return RiskAccountState(
+            equity=equity,
+            daily_start_equity=daily_start_equity,
+            peak_equity=max(peak_equity, equity),
+            gross_exposure=exposure,
+            price_to_account_currency_rate=request.account_state.price_to_account_currency_rate,
+            position_direction=direction,
+            position_quantity=quantity,
         )
 
     @staticmethod

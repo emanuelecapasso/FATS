@@ -4,6 +4,8 @@ from core.schemas import (
     EvaluationRequest,
     EvaluationResponse,
     MarketDataSnapshot,
+    RiskAccountState,
+    RiskConfiguration,
     RiskDecision,
     Signal,
     StrategyConfiguration,
@@ -37,9 +39,14 @@ class RiskEvaluator(Protocol):
     """Porto per il modulo di risk management e position sizing."""
 
     def evaluate(
-        self, signal: Signal, configuration: StrategyConfiguration
+        self,
+        signal: Signal,
+        snapshot: MarketDataSnapshot,
+        configuration: StrategyConfiguration,
+        risk_configuration: RiskConfiguration | None,
+        account_state: RiskAccountState | None,
     ) -> RiskDecision:
-        """Valuta un segnale basandosi sulla configurazione fornita nella richiesta."""
+        """Valuta il segnale usando dati, limiti e stato conto espliciti."""
         ...
 
 

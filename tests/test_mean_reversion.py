@@ -109,7 +109,9 @@ def _configuration(position=SignalDirection.FLAT, parameters=None):
 
 
 class _AllowRisk:
-    def evaluate(self, signal, configuration):
+    def evaluate(
+        self, signal, snapshot, configuration, risk_configuration, account_state
+    ):
         return RiskDecision(approved=True, reasons=[], recommended_quantity=1.0)
 
 
