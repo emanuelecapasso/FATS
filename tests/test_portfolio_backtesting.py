@@ -185,7 +185,7 @@ def _request(
         risk_configuration=RiskConfiguration(
             max_risk_per_position_pct=0.01,
             max_aggregate_exposure_pct=max_aggregate_exposure_pct,
-            max_daily_loss_pct=0.05,
+            max_daily_loss_pct=0.03,
             max_drawdown_pct=0.10,
             stop_distance_pct=0.01,
             max_price_age_seconds=max_price_age_seconds,

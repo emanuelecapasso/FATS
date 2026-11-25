@@ -1,6 +1,15 @@
 """Offline historical replay and simulation."""
 
 from backtesting.portfolio import PortfolioBacktestRunner
+from backtesting.regimes import (
+    MarketRegime,
+    RegimeClassificationConfig,
+    RegimeMetrics,
+    RegimePeriodInput,
+    RegimeRobustnessAnalyzer,
+    RegimeRobustnessReport,
+    RegimeSlice,
+)
 from backtesting.runner import BacktestRunner
 from backtesting.schemas import (
     AccountCurrencyRate,
@@ -48,6 +57,13 @@ __all__ = [
     "PortfolioInstrumentResult",
     "PortfolioInstrumentStatus",
     "PortfolioTrade",
+    "MarketRegime",
+    "RegimeClassificationConfig",
+    "RegimeMetrics",
+    "RegimePeriodInput",
+    "RegimeRobustnessAnalyzer",
+    "RegimeRobustnessReport",
+    "RegimeSlice",
     "WalkForwardCandidate",
     "WalkForwardFoldPlan",
     "WalkForwardPeriodStatus",

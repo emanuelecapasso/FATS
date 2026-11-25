@@ -193,7 +193,7 @@ def _request(*, snapshot=None, candidates=None, fold=None):
         risk_configuration=RiskConfiguration(
             max_risk_per_position_pct=0.01,
             max_aggregate_exposure_pct=10.0,
-            max_daily_loss_pct=0.05,
+            max_daily_loss_pct=0.03,
             max_drawdown_pct=0.10,
             stop_distance_pct=0.01,
             max_price_age_seconds=3600,
@@ -207,6 +207,7 @@ def _request(*, snapshot=None, candidates=None, fold=None):
             price_to_account_currency_rate=1.0,
             position_direction=SignalDirection.FLAT,
             position_quantity=0.0,
+            consecutive_losses=0,
         ),
         initial_capital=10_000.0,
         costs=BacktestCostModel(commission_bps=0.0, slippage_bps=0.0),

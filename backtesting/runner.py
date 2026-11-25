@@ -294,10 +294,22 @@ class BacktestRunner:
 
             risk = response.risk_decision
             direction = response.signal.direction
-            if not risk.approved or direction == SignalDirection.FLAT:
+            if direction == SignalDirection.FLAT:
                 pending_target = _PendingTarget(
                     SignalDirection.FLAT, 0.0, tuple(response.signal.motivational_codes)
                 )
+            elif not risk.approved:
+                # A Shield denial blocks new exposure; it is not an exit signal.
+                # Keep an existing position unchanged unless the strategy itself
+                # explicitly returned FLAT.
+                if open_position is not None:
+                    pending_target = _PendingTarget(
+                        open_position.side,
+                        open_position.quantity,
+                        tuple(response.signal.motivational_codes),
+                    )
+                else:
+                    pending_target = None
             elif open_position is not None and direction == open_position.side:
                 # A hold preserves the original size; the simulator does not pyramid.
                 pending_target = _PendingTarget(
@@ -457,6 +469,11 @@ class BacktestRunner:
         equity = request.initial_capital + realized + unrealized
         if equity <= 0:
             return None
+        consecutive_losses = 0
+        for trade in reversed(trades):
+            if trade.net_pnl >= 0.0:
+                break
+            consecutive_losses += 1
         return RiskAccountState(
             equity=equity,
             daily_start_equity=daily_start_equity,
@@ -465,6 +482,7 @@ class BacktestRunner:
             price_to_account_currency_rate=request.account_state.price_to_account_currency_rate,
             position_direction=direction,
             position_quantity=quantity,
+            consecutive_losses=consecutive_losses,
         )
 
     @staticmethod

@@ -123,4 +123,4 @@ def test_market_bar_ohlc_coherence_fails():
 def test_evaluation_response_schema_version():
     """La risposta usa la versione corrente del contratto canonico."""
     version_field = EvaluationResponse.model_fields["schema_version"]
-    assert version_field.default == "1.5"
+    assert version_field.default == "1.6"

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Ogni modifica deve aggiornare questa costante, i modelli e i test nello stesso commit.
 
 SCHEMA_MAJOR_VERSION = 1
-CURRENT_SCHEMA_VERSION = "1.5"
+CURRENT_SCHEMA_VERSION = "1.6"
 
 
 # --- ENUMS ---
@@ -195,7 +195,10 @@ class RiskConfiguration(StrictBaseModel):
 
     max_risk_per_position_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
     max_aggregate_exposure_pct: float = Field(..., gt=0.0, allow_inf_nan=False)
-    max_daily_loss_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
+    max_daily_loss_pct: float = Field(
+        default=0.03, gt=0.0, le=0.03, allow_inf_nan=False
+    )
+    max_consecutive_losses: int = Field(default=3, ge=1, le=3)
     max_drawdown_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
     stop_distance_pct: float = Field(..., gt=0.0, le=1.0, allow_inf_nan=False)
     max_price_age_seconds: int = Field(..., gt=0)
@@ -268,6 +271,7 @@ class RiskAccountState(StrictBaseModel):
     price_to_account_currency_rate: float = Field(..., gt=0.0, allow_inf_nan=False)
     position_direction: SignalDirection
     position_quantity: float = Field(..., ge=0.0, allow_inf_nan=False)
+    consecutive_losses: int | None = Field(default=None, ge=0)
     instrument_id: str | None = Field(default=None, min_length=1)
     portfolio_positions: dict[str, PortfolioPositionState] = Field(default_factory=dict)
 

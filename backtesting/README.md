@@ -141,3 +141,31 @@ fingerprint, and strategy, engine, and portfolio-runner versions. Both the
 instrument order and event order are canonicalized, so input list ordering
 does not change allocations or run IDs. This flow is offline and never sends
 orders.
+
+`RegimeRobustnessAnalyzer` attribuisce ogni mark equity M5 e ogni trade chiuso a
+un regime calcolato esclusivamente con barre H1 chiuse e disponibili al
+timestamp dell’evento. Non legge barre future. Finestre e soglie sono parametri
+obbligatori di `RegimeClassificationConfig`; i rendimenti e le soglie sono
+frazioni, quindi `0.01` significa 1%.
+
+La volatilità è la deviazione standard di popolazione dei rendimenti H1
+close-to-close degli ultimi `volatility_lookback_bars` intervalli. Il trend è
+il rendimento cumulato close-to-close degli ultimi `trend_lookback_bars`
+intervalli. Le due finestre sono indipendenti. La precedenza è: alta
+volatilità, trend, laterale. In caso di prezzi non positivi, storia H1 chiusa
+insufficiente o finestra incompleta, il regime è `unclassified`. Ogni evento
+usa solo barre H1 chiuse con timestamp non successivo all'evento; barre future
+e barre aperte o di stato ignoto sono escluse.
+
+Il report mantiene risultati distinti per strumento, fold e regime. Le metriche
+sono numero di osservazioni equity, trade chiusi, PnL netto, rendimento sul
+capitale iniziale e drawdown percentuale dei mark attribuiti al regime.
+`net_pnl` e `return_pct` sono nulli quando non ci sono trade; lo stato esplicita
+storia insufficiente, assenza di dati, assenza di trade o periodo completato.
+Il fingerprint dipende dagli input ordinati e dal contenuto dei backtest.
+L'input contiene un `instrument_id`, un `fold_id`, la finestra del fold, lo
+snapshot dati e il relativo `BacktestResult`. Le coppie strumento/fold devono
+essere univoche. `RegimeRobustnessAnalyzer.analyze()` restituisce quattro
+righe per ciascuna coppia, una per ogni valore di `MarketRegime`, anche quando
+la relativa metrica è vuota. I tipi di configurazione, input e output sono
+esportati dal package `backtesting`.

@@ -163,7 +163,7 @@ def _request(
         risk_configuration=RiskConfiguration(
             max_risk_per_position_pct=0.01,
             max_aggregate_exposure_pct=10.0,
-            max_daily_loss_pct=0.05,
+            max_daily_loss_pct=0.03,
             max_drawdown_pct=0.10,
             stop_distance_pct=0.01,
             max_price_age_seconds=3600,
@@ -177,6 +177,7 @@ def _request(
             price_to_account_currency_rate=conversion_rate,
             position_direction=SignalDirection.FLAT,
             position_quantity=0.0,
+            consecutive_losses=0,
         ),
         start=timestamps[0],
         end=timestamps[-1],

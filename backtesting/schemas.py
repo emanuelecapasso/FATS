@@ -560,6 +560,57 @@ class WalkForwardReport(StrictBaseModel):
     aggregate: WalkForwardAggregateMetrics
 
 
+class MarketRegime(str, Enum):
+    TREND = "trend"
+    SIDEWAYS = "sideways"
+    HIGH_VOLATILITY = "high_volatility"
+    UNCLASSIFIED = "unclassified"
+
+
+class RegimeClassificationConfig(StrictBaseModel):
+    """Explicit H1 close-return classifier; thresholds are fractions."""
+
+    trend_lookback_bars: int = Field(..., ge=2)
+    volatility_lookback_bars: int = Field(..., ge=2)
+    trend_return_threshold: float = Field(..., ge=0.0, allow_inf_nan=False)
+    high_volatility_threshold: float = Field(..., gt=0.0, allow_inf_nan=False)
+    minimum_observations: int = Field(..., ge=2)
+
+
+class RegimePeriodInput(StrictBaseModel):
+    instrument_id: str = Field(..., min_length=1)
+    fold_id: str = Field(..., min_length=1)
+    period: WalkForwardWindow
+    market_data: MarketDataSnapshot
+    backtest: BacktestResult
+
+
+class RegimeMetrics(StrictBaseModel):
+    observation_count: int = Field(..., ge=0)
+    trade_count: int = Field(..., ge=0)
+    status: WalkForwardPeriodStatus
+    net_pnl: float | None = Field(default=None, allow_inf_nan=False)
+    return_pct: float | None = Field(default=None, allow_inf_nan=False)
+    max_drawdown_pct: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+
+
+class RegimeSlice(StrictBaseModel):
+    instrument_id: str
+    fold_id: str
+    period: WalkForwardWindow
+    regime: MarketRegime
+    metrics: RegimeMetrics
+
+
+class RegimeRobustnessReport(StrictBaseModel):
+    config: RegimeClassificationConfig
+    strategy_id: str
+    strategy_version: str
+    engine_version: str
+    dataset_fingerprint: str
+    slices: list[RegimeSlice]
+
+
 def canonical_json_payload(value: Any) -> str:
     """Stable JSON encoding used for fingerprints and run IDs."""
     import json

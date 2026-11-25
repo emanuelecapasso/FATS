@@ -287,10 +287,14 @@ class PortfolioBacktestRunner:
                 risk_account,
             )
             if not risk.approved:
-                pending.direction = SignalDirection.FLAT
                 pending.reasons.extend(risk.reasons)
                 self._skip(state, "fill_risk_rejected")
-                target_quantity = 0.0
+                if current_position is not None:
+                    pending.direction = current_position.side
+                    target_quantity = current_position.quantity
+                else:
+                    pending.direction = SignalDirection.FLAT
+                    target_quantity = 0.0
             elif pending.direction == SignalDirection.FLAT:
                 target_quantity = 0.0
             elif risk.recommended_quantity > 0:
@@ -315,7 +319,11 @@ class PortfolioBacktestRunner:
                 if pending.direction != SignalDirection.FLAT
                 else 0.0
             )
-            if target_quantity > 0:
+            if target_quantity > 0 and not (
+                not risk.approved
+                and current_position is not None
+                and pending.direction == current_position.side
+            ):
                 target_quantity = self._cap_quantity(
                     request,
                     target_quantity,
@@ -414,24 +422,30 @@ class PortfolioBacktestRunner:
                 risk_account,
             )
             if not risk.approved:
-                pending.direction = SignalDirection.FLAT
                 pending.reasons.extend(risk.reasons)
+                if state.position is not None:
+                    pending.direction = state.position.side
+                else:
+                    pending.direction = SignalDirection.FLAT
 
             current_notional = (
                 state.position.quantity * bar.open * conversion
                 if state.position
                 else 0.0
             )
-            fill_quantity = self._cap_quantity(
-                request,
-                risk.recommended_quantity if risk.approved else 0.0,
-                fill_valuation["equity"],
-                fill_valuation["gross_exposure"],
-                0.0,
-                current_notional,
-                bar.open,
-                conversion,
-            )
+            if not risk.approved and state.position is not None:
+                fill_quantity = state.position.quantity
+            else:
+                fill_quantity = self._cap_quantity(
+                    request,
+                    risk.recommended_quantity if risk.approved else 0.0,
+                    fill_valuation["equity"],
+                    fill_valuation["gross_exposure"],
+                    0.0,
+                    current_notional,
+                    bar.open,
+                    conversion,
+                )
             if (
                 state.position is not None
                 and pending.direction == state.position.side
@@ -653,6 +667,15 @@ class PortfolioBacktestRunner:
             )
         state = states[instrument_id]
         position = state.position
+        closed_trades = sorted(
+            (trade for instrument_state in states.values() for trade in instrument_state.trades),
+            key=lambda trade: trade.exit_timestamp,
+        )
+        consecutive_losses = 0
+        for trade in reversed(closed_trades):
+            if trade.net_pnl >= 0.0:
+                break
+            consecutive_losses += 1
         return RiskAccountState(
             equity=valuation["equity"],
             daily_start_equity=daily_start,
@@ -662,6 +685,7 @@ class PortfolioBacktestRunner:
             price_to_account_currency_rate=conversion,
             position_direction=position.side if position else SignalDirection.FLAT,
             position_quantity=position.quantity if position else 0.0,
+            consecutive_losses=consecutive_losses,
             instrument_id=instrument_id,
             portfolio_positions=valuation["positions"],
         )

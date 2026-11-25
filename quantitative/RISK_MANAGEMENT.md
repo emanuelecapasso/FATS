@@ -7,14 +7,17 @@ quantity for downstream simulation/API consumers; it is not an order.
 
 ## Explicit inputs and units
 
-Every risk configuration value is supplied in `RiskConfiguration`; there are
-no operating defaults:
+Risk settings are supplied in `RiskConfiguration`. Position sizing, drawdown,
+stop distance, quote age, and quantity step remain explicit inputs. The daily
+loss stop defaults to 3%, and the consecutive-loss stop defaults to 3 closed
+losing trades:
 
 | Field | Unit and meaning |
 | --- | --- |
 | `max_risk_per_position_pct` | Fraction of current equity; `0.01` means 1%. |
 | `max_aggregate_exposure_pct` | Maximum gross notional / current equity; fractions may exceed 1 for leverage. |
-| `max_daily_loss_pct` | Fractional loss from `daily_start_equity`. |
+| `max_daily_loss_pct` | Fractional loss from `daily_start_equity`; defaults to 3% and cannot be configured higher. |
+| `max_consecutive_losses` | Number of trailing closed losing trades that blocks new exposure; defaults to 3. |
 | `max_drawdown_pct` | Fractional loss from `peak_equity`. |
 | `stop_distance_pct` | Assumed stop distance as a fraction of the latest M5 close. |
 | `max_price_age_seconds` | Maximum age of the latest explicitly closed M5 price at `as_of`; equality is accepted. |
@@ -30,6 +33,9 @@ negative when an earlier target closes a position. `price_to_account_currency_ra
 market price's quote currency into account currency; it is used for both risk
 per unit and notional exposure (set to `1` when the currencies match). A
 directional position must have positive quantity; flat must have zero.
+`consecutive_losses` in `RiskAccountState` records trailing closed losing
+trades. Directional decisions fail closed when this count is unknown; flat
+signals remain available for exits.
 For a new/reversed position, the current instrument's notional is removed from
 projected gross exposure (current exposure plus reservation delta) before
 calculating remaining aggregate capacity.
@@ -50,8 +56,9 @@ recommended_quantity = floor(min(quantity_by_risk, quantity_by_exposure) / quant
 The smaller cap governs sizing. Equality with the position-risk and aggregate
 exposure budgets is allowed. A result that rounds to zero is rejected. A
 position already being held is approved only if its risk and aggregate exposure
-remain within their configured limits. Daily loss or drawdown **at or above**
-the configured threshold blocks new directional exposure. A flat signal is
+remain within their configured limits. Daily loss, consecutive losses, or
+drawdown **at or above** their configured threshold blocks new directional
+exposure. A flat signal is
 approved with quantity zero after input validation so that exits remain
 possible even when a loss threshold has been reached.
 

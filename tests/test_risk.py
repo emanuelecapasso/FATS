@@ -29,7 +29,7 @@ def risk_configuration():
     return RiskConfiguration(
         max_risk_per_position_pct=0.01,
         max_aggregate_exposure_pct=0.50,
-        max_daily_loss_pct=0.05,
+        max_daily_loss_pct=0.03,
         max_drawdown_pct=0.10,
         stop_distance_pct=0.02,
         max_price_age_seconds=300,
@@ -47,6 +47,7 @@ def account():
         price_to_account_currency_rate=1.0,
         position_direction=SignalDirection.FLAT,
         position_quantity=0.0,
+        consecutive_losses=0,
     )
 
 
@@ -130,9 +131,7 @@ def test_daily_loss_and_drawdown_thresholds_are_rejected(
     updates = {field: value}
     if reason == "risk:drawdown_limit":
         updates["peak_equity"] = 10_000.0
-        risk_configuration = risk_configuration.model_copy(
-            update={"max_daily_loss_pct": 0.20}
-        )
+        updates["daily_start_equity"] = 9_000.0
     if reason == "risk:daily_loss_limit":
         updates["daily_start_equity"] = 10_000.0
     account = account.model_copy(update=updates)
@@ -155,6 +154,7 @@ def test_existing_position_over_position_risk_limit_is_rejected(
         price_to_account_currency_rate=1.0,
         position_direction=SignalDirection.LONG,
         position_quantity=60.0,
+        consecutive_losses=0,
     )
     decision = _evaluate(
         DeterministicRiskEvaluator(),
@@ -177,6 +177,7 @@ def test_exact_risk_and_aggregate_caps_are_allowed(risk_configuration, snapshot)
         price_to_account_currency_rate=1.0,
         position_direction=SignalDirection.LONG,
         position_quantity=50.0,
+        consecutive_losses=0,
     )
     decision = _evaluate(
         DeterministicRiskEvaluator(),

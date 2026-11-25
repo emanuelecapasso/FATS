@@ -82,8 +82,12 @@ class DeterministicRiskEvaluator:
                 reasons=["risk:exit_or_flat_approved"],
                 recommended_quantity=0.0,
             )
+        if account.consecutive_losses is None:
+            return deny("risk:consecutive_loss_state_missing")
         if daily_loss_pct >= risk_configuration.max_daily_loss_pct:
             return deny("risk:daily_loss_limit")
+        if account.consecutive_losses >= risk_configuration.max_consecutive_losses:
+            return deny("risk:consecutive_loss_limit")
         if drawdown_pct >= risk_configuration.max_drawdown_pct:
             return deny("risk:drawdown_limit")
 
